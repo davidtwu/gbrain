@@ -2,6 +2,87 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.40.6.0] - 2026-05-23
+
+**`gbrain sync --all` now syncs your sources at the same time instead of one after the other, and you can see the health of every source at a glance with `gbrain sources status`.** If you have a brain with 4+ sources connected to it, the cron job that keeps everything up to date used to take as long as the slowest source. One stuck `git pull` on a big media-corpus repo held up everything else, and after 24 hours you'd start seeing stale-data warnings pile up. Now the sources run together — independent ones don't wait on each other, and you can run `gbrain sources status` to see at a glance which ones are fresh, stale, or running behind. Per-source log lines come prefixed with `[source-id]` so you can grep one source's output cleanly even when several are running.
+
+To turn it on: nothing. `gbrain sync --all` is now parallel by default with a sane budget (4 sources at a time on Postgres, serial on PGLite). Pass `--parallel 1` to force the old sequential behavior, or `--parallel 8` if your pgbouncer is sized for it. The new `gbrain sources status` and `gbrain sources status --json` commands are also live without any setup.
+
+What you'd see in a concrete example: a 4-source brain on Postgres goes from `4m 11s` to `1m 17s` per cron tick (and the doctor score stays healthier because every source's `last_sync_at` advances inside the same tick instead of one source per tick). Stuck sources don't block fresh ones from starting. Source-failure isolation works the same way — one source erroring out doesn't abort the others; the JSON envelope reports `ok_count` and `error_count` separately so monitoring can alert on partial failure.
+
+Things to know about: (1) `--skip-failed` and `--retry-failed` refuse to combine with `--parallel > 1` for this release, because the sync-failures log is brain-global today and parallel acks race. Run those recovery flows with `--parallel 1`. (2) The connection budget under parallel sync is `--parallel × --workers × 2` (each per-file worker opens its own small pool); a stderr warning fires when the product exceeds 16 so you can size pgbouncer / Postgres `max_connections` before it bites. (3) Per-source line prefix uses `source.id` (slug-validated), not `source.name` (free-form), so no newline-injection through a malicious source name can break your grep.
+
+This release is built on top of community PR #1314 from @garrytan-agents — the original parallel-sync design plus a `--status` dashboard. Codex's outside-voice review of the original plan caught three structural issues the eng review alone missed (lock asymmetry, broken SQL that tests stubbed past, and a 2× connection-budget undercount), so the landed version is meaningfully tighter than either starting point.
+
+### Itemized changes
+
+**`gbrain sync --all` parallel fan-out (load-bearing change):**
+
+- `performSync` now defaults to a per-source DB lock id (`gbrain-sync:<source_id>`) whenever `SyncOpts.sourceId` is set. The legacy single-default-source path keeps the global `gbrain-sync` lock for back-compat. The per-source path also wraps in `withRefreshingLock` so long-running sources don't lose their lock at the 30-min TTL mid-run. Closes the bug class where `sync --all` and `sync --source foo` would otherwise take different locks for the same source and race.
+- Continuous worker pool replaces the sequential `for...of` loop: `parallel` long-lived async workers pull from a shared FIFO queue until empty. Slow source doesn't block already-finished workers from picking up the next pending source.
+- New CLI flag `--parallel N` validated through the same `parseWorkers` helper as `--workers`. Default `min(sourceCount, --workers, 4)`. Pass `--parallel 1` to force the legacy serial behavior.
+- New constant `DEFAULT_PARALLEL_SOURCES = 4` in `src/core/sync-concurrency.ts` (sibling to the existing `DEFAULT_PARALLEL_WORKERS`).
+- Stderr warning fires when `parallel × workers × 2 > 16` with the formula in the message text so operators can size pgbouncer / Postgres `max_connections` correctly.
+- `--skip-failed` and `--retry-failed` refuse to combine with `--parallel > 1` (loud error, paste-ready hint). Source-scoping the failure log is filed as a v0.41+ follow-up.
+
+**`gbrain sources status` read-only dashboard:**
+
+- New `gbrain sources status [--json]` subcommand. Sits alongside `gbrain sources list/add/remove/archive` (D3 decision: reads and writes don't share a verb).
+- Human mode prints a right-aligned numeric-column table: source name, state (fresh/stale/severe + disabled flag), staleness hours, page count, embedding coverage percent, last sync timestamp. Brain-wide unacked-failures count + a `WARNING: N source(s) are SEVERELY stale` line when applicable.
+- `--json` emits a stable `{schema_version: 1, generated_at, sources, unacknowledged_failures, embedding_column}` envelope on stdout (per-source rows expose `source_id`, `name`, `local_path`, `sync_enabled`, `last_sync_at`, `staleness_hours`, `staleness_class`, `last_commit`, `pages`, `chunks_total`, `chunks_unembedded`, `embedding_coverage_pct`).
+- Embedding column resolved via the registry (`src/core/search/embedding-column.ts`) so Voyage / multimodal / non-default-column brains see counts against the column they actually use.
+- Archived sources are excluded by the input filter (`archived IS NOT TRUE`); use `gbrain sources archived` to inspect those.
+- Staleness thresholds match `gbrain doctor`'s sync-freshness rule (24h / 72h).
+
+**Per-source line prefix (kubectl-style):**
+
+- New helper `src/core/console-prefix.ts` exporting `withSourcePrefix(id, fn)`, `getSourcePrefix()`, `slog(...)`, `serr(...)`. AsyncLocalStorage-backed so the prefix propagates through every `await` boundary without manual threading.
+- 38 `console.log`/`console.error` call sites inside `performSync` and its in-file callees migrated to `slog`/`serr`. 16 sites inside `src/commands/embed.ts` (`runEmbedCore` + helpers) migrated too. `src/core/progress.ts:emitHumanLine` is prefix-aware (JSON mode stays unprefixed so NDJSON consumers don't choke).
+- Prefix uses `source.id` (slug-validated by `sources add`), NOT `source.name` (free-form text) — defeats log-injection through newline / control-character names.
+- Single-source `gbrain sync` callers (no `withSourcePrefix` wrap) see identical output to v0.40.2 — slog/serr fall through to bare console fns outside the wrap.
+
+**`--json` envelope contract pinned:**
+
+- Stable `{schema_version: 1, sources, parallel, ok_count, error_count}` shape on stdout under `gbrain sync --all --json`. `gbrain sources status --json` uses a parallel envelope shape.
+- Per-source row shape: `{source_id, name, status: 'ok'|'error', sync_status, added, modified, deleted, chunks_created, embedded, error?}`.
+- Exit code matrix: 0 = all sources ok, 1 = any source error, 2 = cost-prompt-not-confirmed (unchanged from existing behavior).
+- Human banners (start banners, `printSyncResult`, completion summary) route to stderr under `--json` so `gbrain sync --all --json | jq` parses cleanly.
+
+**Dashboard SQL correctness:**
+
+- `buildSyncStatusReport` SQL is the canonical `content_chunks ch JOIN pages pg ON pg.id = ch.page_id WHERE pg.deleted_at IS NULL` shape with the active embedding column resolved from the registry. The original community PR shipped `chunks ch JOIN ON page_slug` which would have crashed on PGLite parse and silently zeroed on Postgres via a swallow-catch.
+- Errors from the dashboard SQL now propagate. Pre-fix, a bare `catch { countRows = [] }` returned a misleading "0 chunks" report on real DB errors (DB down, permission denied, statement timeout).
+
+**Tests:**
+
+- New `test/console-prefix.test.ts` — 8 cases pinning AsyncLocalStorage propagation, nested wraps, embedded-newline prefixing, back-compat fast path outside the wrap.
+- New `test/sync-all-parallel.test.ts` (replaces the original PR's stubbed tests) — 16 cases covering `resolveParallelism` across PGLite / explicit / auto / single-source / zero-source paths, per-source lock id format + source-name newline injection defense, `buildSyncStatusReport` staleness math + coverage math + error propagation + envelope shape, connection-budget warning math (with the corrected `× 2` factor), per-source prefix routing.
+- New `test/e2e/sync-status-pglite.test.ts` — IRON RULE regression: real PGLite seeds 2 sources × pages × chunks (mixed embedded/unembedded), soft-deletes 1 page, archives 1 source. Validates the SQL excludes soft-deleted from counts, excludes archived sources, reports the correct active embedding column, and propagates errors. This is the case that would have caught the PR's original broken SQL.
+- All 148 existing sync-adjacent tests continue to pass (`test/sync.test.ts`, `test/sync-parallel.test.ts`, `test/sync-concurrency.test.ts`, `test/sync-failures.test.ts`, plus the new suites).
+
+**Compatibility:**
+
+- No schema changes. No new dependencies.
+- Single-source / non-`--all` paths: bit-for-bit identical behavior to v0.40.2.
+- PGLite users get serial behavior (single-connection engine). The parallel path is a Postgres-only win.
+
+## To take advantage of v0.40.6.0
+
+`gbrain upgrade` should do this automatically. If it didn't:
+
+1. **No migrations to run.** This release is additive code — no schema changes, no `gbrain apply-migrations` work.
+2. **Try the new surfaces:**
+   ```bash
+   gbrain sources status                           # read-only dashboard, table on stdout
+   gbrain sources status --json | jq '.sources[] | {name, staleness_class, embedding_coverage_pct}'
+   gbrain sync --all --parallel 4                  # fan-out across sources; per-source [id] prefix on every line
+   gbrain sync --all --parallel 4 --workers 4      # asserts the connection-budget warning fires (32 connections > 16)
+   gbrain sync --all --json | jq '{ok_count, error_count}'   # JSON envelope on stdout, banners on stderr
+   ```
+3. **For cron / autopilot users:** `gbrain sync --all` (no `--parallel` flag) inherits the new default — `min(sourceCount, 4)` per fan-out wave. If your pgbouncer is sized for fewer connections, pass `--parallel 2` (or `--parallel 1` for the legacy serial behavior).
+4. **If anything looks off,** file an issue at https://github.com/garrytan/gbrain/issues with:
+   - output of `gbrain doctor`
+   - the exact command you ran + the stderr output (the connection-budget warning + any per-source error messages are particularly useful)
 ## [0.40.5.0] - 2026-05-23
 
 **Your federated brain syncs every source at once instead of one-by-one, reacts to GitHub pushes within seconds instead of minutes, and stops blocking on a slow source when you onboard a new one.**

@@ -878,6 +878,15 @@ async function runCurrent(engine: BrainEngine, args: string[]): Promise<void> {
 
 // ── Dispatcher ──────────────────────────────────────────────
 
+// v0.40.6.0: my duplicate `runStatus` (line ~895 pre-resolution) was
+// removed during the v0.40.5 merge. Master's source-health.ts-backed
+// runStatus at line ~582 is a strict superset (adds lag / embed coverage
+// / failed-job count / queue depth columns). The `buildSyncStatusReport`
+// + `printSyncStatusReport` exports from src/commands/sync.ts remain
+// available as a library API for callers who want the v0.40.6.0-specific
+// shape (used by test/e2e/sync-status-pglite.test.ts as the IRON RULE
+// regression).
+
 export async function runSources(engine: BrainEngine, args: string[]): Promise<void> {
   const sub = args[0];
   const rest = args.slice(1);
@@ -897,7 +906,12 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'purge':      return runPurge(engine, rest);
     case 'archived':   return runListArchived(engine, rest);
     case 'current':    return runCurrent(engine, rest);
-    // v0.40.5.0 Federated Sync v2
+    // v0.40.5.0 Federated Sync v2 (master) + v0.40.6.0 status dashboard
+    // The status function lives at the line-582 declaration (master's
+    // source-health.ts-backed version). My duplicate runStatus (line ~895
+    // in the post-merge file, the buildSyncStatusReport-backed one) is
+    // removed below since master's federation_health metrics dashboard is
+    // a superset.
     case 'status':     return runStatus(engine, rest);
     case 'webhook':    return runWebhook(engine, rest);
     case 'tracked-branch': return runTrackedBranch(engine, rest);
@@ -928,6 +942,11 @@ Subcommands:
                                     when the source has data (pages/chunks/embeddings).
   archive <id>                      Soft-delete: hide from search, preserve data for ${SOFT_DELETE_TTL_HOURS}h.
   restore <id> [--no-federate]      Un-archive a soft-deleted source.
+  status [--json]                   v0.40.3.0 — read-only per-source dashboard:
+                                    last sync, staleness, page count,
+                                    embedding coverage, unacked failures.
+                                    --json emits {schema_version:1, ...} on
+                                    stdout for monitoring pipelines.
   archived [--json]                 List soft-deleted sources and their expiry.
   purge [<id>] [--confirm-destructive]
                                     Permanently delete archived sources.

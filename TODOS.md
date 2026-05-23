@@ -1,5 +1,36 @@
 # TODOS
 
+## v0.40.3.0 follow-ups (v0.41+)
+
+- [ ] **v0.41+: source-scope the `sync-failures.jsonl` log so `--skip-failed` works under `--parallel > 1`.**
+  v0.40.3.0 shipped `gbrain sync --all --parallel N` as a continuous worker pool
+  with per-source DB locks. The remaining unsafe path: `recordSyncFailures()` /
+  `acknowledgeSyncFailures()` in `src/core/sync.ts` write to a brain-global JSONL
+  file at `~/.gbrain/sync-failures.jsonl` with no per-source scope. Under parallel
+  sync, source A's `--skip-failed` ack can swallow source B's failures recorded
+  while B was still running. v0.40.3.0's safe interim: refuse to combine
+  `--skip-failed` / `--retry-failed` with `--parallel > 1` (loud error, paste-ready
+  hint pointing at `--parallel 1`). The proper fix: (1) extend the JSONL row
+  schema with a `source_id` field; (2) `recordSyncFailures(failures, sourceId)`
+  stamps the field; (3) `acknowledgeSyncFailures({sourceId})` filters acks to
+  one source's rows; (4) `unacknowledgedSyncFailures({sourceId})` reads the
+  subset. Drop the v0.40.3.0 restriction once source-scoped acks are
+  deterministic. Estimate: ~1-2 days. Filed during v0.40.3.0 plan review by
+  Codex outside-voice (decision D15 → B in the eng-review plan at
+  `~/.claude/plans/system-instruction-you-are-working-fluttering-grove.md`).
+
+- [ ] **v0.41+ (optional): extend `checkSyncFreshness` to include `embedding_coverage_pct`
+  per source.** v0.40.3.0 plan originally proposed adding a NEW doctor check
+  `sync_freshness_per_source` consuming `buildSyncStatusReport`. Codex caught
+  that `checkSyncFreshness` (`src/commands/doctor.ts:~1609`) is ALREADY per-source —
+  iterates `WHERE local_path IS NOT NULL`, emits per-source messages with
+  paste-ready `gbrain sync --source <id>` hints, warns at 24h, fails at 72h.
+  The plan dropped the duplicate (D9 → A). The real follow-up is to extend
+  `checkSyncFreshness`'s message to include `embedding_coverage_pct` per source
+  alongside the staleness number so doctor surfaces the coverage gap inline.
+  Implementation: reuse `buildSyncStatusReport` from `src/commands/sync.ts`,
+  fold coverage into the existing per-source message string. ~half a day.
+
 ## v0.40.1.0 Track D follow-ups (v0.41+)
 
 - [ ] **v0.41+: contributor-mode CI capture for BrainBench-Real replay gate.**
