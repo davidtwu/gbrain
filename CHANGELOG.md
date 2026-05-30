@@ -2,6 +2,111 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.41.38.0] - 2026-05-30
+
+**Two fixes for Supabase brains with a code source. `gbrain code-callers` and
+`gbrain code-callees` now respect your `.gbrain-source` pin instead of demanding
+`--source` every time, and `gbrain dream` finally runs on a postgres brain that
+has no local checkout instead of dying with "No brain directory found."**
+
+If you build a code call graph with gbrain (the way gstack's `/sync-gbrain`
+does), both of these bit you. You'd run `gbrain dream` to build the graph and it
+would error out on Supabase. And every `gbrain code-callers Foo` query forced a
+`--source` flag even though you'd pinned the source with a `.gbrain-source`
+dotfile in your repo. Now "who calls this / what does this call" works out of
+the box on a Supabase brain.
+
+### What changed for you
+
+- **`code-callers` / `code-callees` honor the source pin.** When you don't pass
+  `--source` or `--all-sources`, they now resolve through the same chain as
+  `gbrain sources current`: flag, then `GBRAIN_SOURCE`, then the
+  `.gbrain-source` dotfile, then the source whose `local_path` contains your cwd,
+  then the brain default, then the single non-default source. They only fall
+  back to the old "multi-source, pick one" error when nothing in that chain
+  matches. `code-def` / `code-refs` are unchanged.
+- **`gbrain dream` runs on postgres brains with no checkout.** The maintenance
+  cycle's database-only phases (including `resolve_symbol_edges`, the call-graph
+  builder) run against the DB. The six filesystem phases (lint, backlinks, sync,
+  synthesize, extract, patterns) are skipped with a clear reason instead of a
+  blanket failure. `gbrain doctor`'s "Run `gbrain dream --source <id>`"
+  recommendation now actually works on this engine.
+
+### How to use it
+
+```bash
+# In a repo with a .gbrain-source pin, on a multi-source Supabase brain:
+gbrain code-callers myFunction        # resolves to the pinned source, no --source
+gbrain code-callees myFunction --json # JSON now includes source_id + scope
+
+# Build the call graph on a checkout-less postgres brain:
+gbrain dream --phase resolve_symbol_edges
+gbrain dream --source my-code-source  # scopes per-source phases correctly
+```
+
+### Things to know
+
+- `code-callers` / `code-callees` JSON output gains `source_id` and `scope`
+  (`"single"` or `"all"`) so a tool can confirm which source it actually queried.
+  When the pin auto-routed to the only non-default source, a one-line stderr
+  nudge names it (same as `gbrain sync`). A zero-result implicit-scope query
+  appends a "try `--all-sources`" hint.
+- `gbrain dream`'s JSON report exposes skipped filesystem phases as
+  `phases[].status: "skipped"` with `phases[].details.reason: "no_brain_dir"` —
+  a stable shape downstream tools can key off. Pass `--dir <path>` to run the
+  filesystem phases.
+- `gbrain dream --source <id>` now scopes the per-source database phases
+  (`extract_facts`, `extract_atoms`, calibration) to that source even with no
+  checkout. Previously they silently ran against the `default` source while the
+  cycle marked your source "fresh" — a freshness stamp that lied.
+- An edges-only cycle now reports `ok` (not `clean`) when it resolves call-graph
+  edges, so you can tell real work from a no-op.
+- The queued `autopilot-cycle` job (what `gbrain remote ping` triggers) follows
+  the same checkout-less behavior instead of running against the worker's
+  current directory.
+
+## To take advantage of v0.41.38.0
+
+Nothing to run. `gbrain upgrade` ships the fix. After upgrading, on a postgres
+brain with a `.gbrain-source` pin:
+
+```bash
+gbrain code-callers <symbol>   # should resolve without --source
+gbrain dream --phase resolve_symbol_edges   # should run, not error
+```
+
+If `gbrain dream` still prints "No brain directory found and no database
+connection," your `~/.gbrain/config.json` has neither a postgres `database_url`
+nor a `sync.repo_path`; run `gbrain doctor` and file an issue with its output.
+
+### Itemized changes
+
+**code-callers / code-callees source resolution**
+- New `resolveScopedSourceOrThrow(engine, cwd)` in `src/core/sources-ops.ts`:
+  runs `resolveSourceWithTier` and only applies the multi-source ambiguity guard
+  (`resolveDefaultSource`) on the `seed_default` tier. Returns `{source_id, tier}`.
+- `src/commands/code-callers.ts` + `src/commands/code-callees.ts` route through
+  it, add `source_id` + `scope` to the JSON envelope, emit the `sole_non_default`
+  stderr nudge, append the zero-result `--all-sources` hint, and surface a bad
+  `.gbrain-source` / `GBRAIN_SOURCE` value as a clean `invalid_source_pin` exit 2.
+
+**gbrain dream on postgres**
+- `src/commands/dream.ts`: `resolveBrainDir` returns `string | null` (resolution
+  order: `--dir` → resolved source's `local_path` → `sync.repo_path` → null);
+  `runDream` owns the both-null (no checkout AND no engine) exit 1.
+- `src/core/cycle.ts`: `CycleOpts.brainDir` is now `string | null`;
+  `resolveSourceForDir` is null-tolerant; the six filesystem phases skip with
+  `reason: "no_brain_dir"` when there's no checkout; `cycleSourceId =
+  opts.sourceId ?? resolveSourceForDir(...)` scopes the per-source DB phases;
+  `deriveStatus` counts resolved/ambiguous edges as work.
+- `src/commands/jobs.ts`: the `autopilot-cycle` handler passes `null` (not cwd
+  `'.'`) when no repo is configured.
+
+**Tests**
+- `test/code-scoped-source-resolve.test.ts` (8), `test/code-callers-pin.serial.test.ts`
+  (9), `test/dream-postgres.test.ts` (8), `test/jobs-autopilot-cycle-braindir.test.ts`
+  (1) — covering the pin chain, env/brain_default/sole_non_default tiers, the
+  source-scope regression, the null-brainDir path, edges→ok, and the both-null exit.
 ## [0.41.37.0] - 2026-05-30
 
 **A four-bug critical fix wave: your tags stop disappearing on reindex, a

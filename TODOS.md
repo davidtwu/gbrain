@@ -1,5 +1,36 @@
 # TODOS
 
+## v0.41.38.0 dream-postgres / source-pin follow-ups (v0.42+)
+
+Deferred from the v0.41.38.0 wave (code-callers/callees pin + dream-on-postgres).
+Documented tradeoffs, not blockers — the shipped bug fixes are complete and tested.
+
+- [ ] **P1 — Per-source autopilot fan-out passes the global repoPath.**
+  `src/commands/autopilot-fanout.ts:~206` submits every per-source `autopilot-cycle`
+  job with `repoPath: opts.repoPath` (the global checkout), not `src.local_path`.
+  With v0.41.38.0's `cycleSourceId = opts.sourceId ?? resolveSourceForDir(...)`,
+  a per-source job now reconciles DB phases for `src.id` while the filesystem
+  phases (sync/lint/extract) run against the default brain's checkout, then stamps
+  `src.id` fresh — mixed scope. Pre-existing fan-out limitation (cycle.ts PHASE_SCOPE
+  comment already notes genuine per-source fan-out needs deferred work); the common
+  single-source autopilot path (legacy no-source dispatch) is unaffected. Fix:
+  resolve brainDir from the source's `local_path` inside the `autopilot-cycle`
+  handler when `source_id` is set (mirror dream.ts's T1), so FS and DB phases agree.
+  Needs its own review (touches the deferred autopilot path).
+- [ ] **P2 — `.gbrain-source` with invalid SYNTAX still falls through silently.**
+  `readDotfileWalk` (source-resolver.ts:39) intentionally skips a dotfile whose
+  content fails `isValidSourceId` (e.g. `repo_a` with an underscore) per the v0.31.8
+  P1-F silent-fallback design, so `resolveScopedSourceOrThrow` resolves it to a
+  later tier rather than surfacing `invalid_source_pin`. A valid-syntax-but-missing
+  pin DOES surface (assertSourceExists throws). Decide whether a typo'd dotfile
+  should warn loudly; changing it alters resolver semantics shared by other callers.
+- [ ] **P3 — Sibling source-scoped commands don't honor the pin.** `blast`/`flow`/
+  `clusters`/`wiki` still call `resolveDefaultSource` directly. Route them through
+  `resolveScopedSourceOrThrow` for consistency with code-callers/code-callees.
+- [ ] **P3 — `gbrain autopilot` CLI daemon pre-guard.** `autopilot.ts:~152`
+  `if (!repoPath) exit 1` still blocks the daemon on a checkout-less postgres brain.
+  Relax to the same null-brainDir contract so the daemon can run DB phases.
+
 ## v0.41.37.0 critical-fix-wave follow-ups (v0.42+)
 
 Filed from the v0.41.37.0 wave (#1621 tag-wipe, #1581 grandfather hang,
