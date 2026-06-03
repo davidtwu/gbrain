@@ -310,7 +310,10 @@ describe('Eng-review D3 — executeRaw has no per-call retry wrapper', () => {
 
   it('PostgresEngine.reconnect() still exists for supervisor-driven recovery', () => {
     const src = readFileSync(resolve('src/core/postgres-engine.ts'), 'utf-8');
-    expect(src).toContain('async reconnect()');
+    // v0.42.10.0 (#1685 GAP B): reconnect() gained an optional ctx param so it
+    // can classify the triggering error for the pool-recovery audit. Match the
+    // prefix so both `reconnect()` and `reconnect(ctx?)` satisfy the contract.
+    expect(src).toContain('async reconnect(');
     expect(src).toContain('await this.disconnect()');
   });
 

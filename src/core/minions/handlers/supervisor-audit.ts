@@ -118,6 +118,33 @@ export function readSupervisorEvents(opts: { sinceMs?: number } = {}): Superviso
 }
 
 /**
+ * Cross-week supervisor read for windows that can straddle a Monday boundary
+ * (issue #1685, CODEX #7). The single-file `readSupervisorEvents` above can lose
+ * a Sunday-night OOM loop when read on Monday because it only opens the current
+ * ISO-week file. This variant delegates to the shared writer's `readRecent`,
+ * which walks current + previous week (the same prev-week walk db-disconnect and
+ * the other audits already use), then applies an hour-precision cutoff.
+ *
+ * Used by `worker_oom_loop` in doctor.ts so the OOM-loop verdict can't silently
+ * miss a week-boundary incident. The legacy `readSupervisorEvents` keeps its
+ * single-file semantics so the existing `supervisor` check's assertions don't
+ * shift (and PR #1688, concurrently editing that check, doesn't conflict).
+ */
+export function readRecentSupervisorEvents(
+  hours = 24,
+  now: Date = new Date(),
+): SupervisorEmission[] {
+  const days = hours / 24;
+  const events = writer.readRecent(days, now);
+  const cutoff = now.getTime() - hours * 3_600_000;
+  return events.filter((e) => {
+    if (!e.event || !e.ts) return false;
+    const t = Date.parse(e.ts);
+    return !Number.isFinite(t) || t >= cutoff;
+  });
+}
+
+/**
  * Denylist of clean-exit `likely_cause` values. Anything not in this set —
  * including future unrecognized values — counts as a crash. Matches the
  * domain asymmetry: clean exits are explicit (the worker exited because we

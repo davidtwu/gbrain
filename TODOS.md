@@ -1,5 +1,30 @@
 # TODOS
 
+## v0.42.12.0 #1685 brain-health-as-solved follow-ups (v0.42+)
+
+Deferred from the v0.42.12.0 wave (issue #1685, the posture umbrella over #1678/#1735).
+The shipped checks (`worker_oom_loop`, `pool_reap_health`, cause-ranked `top_issues`,
+per-source auto-drain) cover the diagnosis + self-heal demands; this is the one
+explicitly-deferred demand.
+
+- [ ] **P3 — GAP E: secondary-error cause-ref tagging.** #1685 demand 3 asks that
+  downstream cascade errors (CONNECTION_ENDED, lock-renewal-failed, No database
+  connection) be tagged `secondary=true cause_ref=<root-incident-id>` so they can't
+  masquerade as the root cause in logs. v0.42.12.0 deferred this: the now-self-
+  identifying RSS watchdog exit (from #1735) plus the cause-ranked `doctor` header
+  (this wave, GAP C) already remove most of the symptom-masquerades-as-cause problem
+  at the doctor surface. The remaining gap is the raw worker LOG stream during a live
+  incident (not the doctor summary). Doing it right needs an incident-id correlator
+  threaded through the supervisor + DB-error paths — a bigger change than the doctor-
+  surface fixes this wave shipped. Pick up if live-log triage during an incident is
+  still painful after operators have the cause-ranked doctor.
+- [ ] **P3 — `worker_oom_loop` remote/thin-client path.** The bare-worker half of the
+  OOM signal reads `minion_jobs` directly (Postgres-only, local). The HTTP MCP
+  thin-client doctor path (`doctorReportRemote`) doesn't surface it. Same brain-wide-
+  vs-source-scoping caveat noted inline at autopilot.ts (the `--source` remote scoping
+  is a separate TODO, mirroring orphan_ratio). Wire once the thin-client doctor grows
+  a supervisor/queue surface.
+
 ## v0.42.15.0 isTTY-output follow-ups (v0.42+)
 
 Filed from the v0.42.15.0 wave (#1784, decouple primary output from

@@ -96,6 +96,22 @@ export interface GBrainConfig {
        */
       max_usd?: number;
     };
+    /**
+     * v0.42.x (#1685 GAP D) — extract_atoms backlog auto-drain. Default ON so a
+     * pack-gated silent backlog never piles up unseen; daily-spend-capped so the
+     * Haiku spend stays bounded. Read via the DB plane (`engine.getConfig`) at
+     * each autopilot tick. Disable with `gbrain config set autopilot.auto_drain.enabled false`.
+     */
+    auto_drain?: {
+      /** Master switch. Default true. */
+      enabled?: boolean;
+      /** Per-drain wallclock budget in seconds. Default 120. */
+      window_seconds?: number;
+      /** Backlog must exceed this to trigger a drain. Default 25. */
+      threshold?: number;
+      /** Daily spend cap (USD); bounds drains/day = floor(cap / ~$0.30). Default 2.0. */
+      max_usd_per_day?: number;
+    };
   };
   eval?: {
     /** false disables capture entirely. Defaults to true. */
@@ -785,6 +801,7 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
   'provider_base_urls.', // per-provider base URL overrides
   'content_sanity.',    // v0.41 content-sanity tunables
   'mcp.',               // mcp.publish_skills, mcp.skills_dir (PR1 skill catalog)
+  'autopilot.',         // autopilot.nightly_quality_probe.*, autopilot.auto_drain.* (#1685)
   'self_upgrade.',      // v0.42 self-upgrade (mode, quiet_hours, state)
 ];
 

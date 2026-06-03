@@ -1990,8 +1990,9 @@ export class PostgresEngine implements BrainEngine {
         // (postgres.js's own connection-replacement covers that case).
         // Fail-loud per retry.ts contract: a reconnect throw propagates
         // as the real cause, replacing the symptomatic
-        // "No database connection" error.
-        reconnect: () => this.reconnect(),
+        // "No database connection" error. ctx carries the triggering error so
+        // reconnect() can classify reap-vs-other for the pool-recovery audit.
+        reconnect: (ctx) => this.reconnect(ctx),
       });
     } catch (err) {
       // Distinguish "retries exhausted" (a retryable error that ran out of
@@ -4778,15 +4779,45 @@ export class PostgresEngine implements BrainEngine {
   /**
    * Reconnect the engine by tearing down the current pool and creating a fresh one.
    * No-ops if no saved config (module-singleton mode) or if already reconnecting.
+   *
+   * v0.42.x (#1685 GAP B): records a pool-recovery audit event so the
+   * `pool_reap_health` doctor check can answer "reaped N times AND not
+   * auto-recovering." `ctx.error` (threaded by retry.ts) is classified: a
+   * CONNECTION_ENDED match is a true pooler reap; anything else (or no error,
+   * e.g. the supervisor's health-check reconnect) is `reconnect_other`. All
+   * audit calls are best-effort and never block the reconnect (CODEX #8).
    */
-  async reconnect(): Promise<void> {
+  async reconnect(ctx?: { error?: unknown }): Promise<void> {
     if (!this._savedConfig || this._reconnecting) return;
     this._reconnecting = true;
+
+    let isReap = false;
+    if (ctx?.error !== undefined) {
+      try {
+        const { isConnectionEndedError } = await import('./retry-matcher.ts');
+        isReap = isConnectionEndedError(ctx.error);
+      } catch { /* classification is best-effort */ }
+    }
+    try {
+      const { logPoolRecovery } = await import('./audit/pool-recovery-audit.ts');
+      logPoolRecovery(isReap ? 'reap_detected' : 'reconnect_other', ctx?.error);
+    } catch { /* audit is best-effort */ }
+
     try {
       // Tear down old pool (best-effort — it may already be dead)
       try { await this.disconnect(); } catch { /* swallow */ }
       // Create fresh pool
       await this.connect(this._savedConfig);
+      try {
+        const { logPoolRecovery } = await import('./audit/pool-recovery-audit.ts');
+        logPoolRecovery('reconnect_succeeded');
+      } catch { /* best-effort */ }
+    } catch (err) {
+      try {
+        const { logPoolRecovery } = await import('./audit/pool-recovery-audit.ts');
+        logPoolRecovery('reconnect_failed', err);
+      } catch { /* best-effort */ }
+      throw err;
     } finally {
       this._reconnecting = false;
     }

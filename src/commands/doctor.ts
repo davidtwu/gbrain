@@ -21,6 +21,7 @@ import { loadCompletedMigrations } from '../core/preferences.ts';
 import { compareVersions } from './migrations/index.ts';
 import { createProgress, startHeartbeat, type ProgressReporter } from '../core/progress.ts';
 import { categorizeCheck, type CheckCategory } from '../core/doctor-categories.ts';
+import { rankIssues, type RankedIssue } from '../core/doctor-cause-rank.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import type { DbUrlSource } from '../core/config.ts';
 import { gbrainPath } from '../core/config.ts';
@@ -127,6 +128,12 @@ export interface DoctorReport {
     meta: number;
   };
   checks: Check[];
+  /**
+   * v0.42.x (#1685 GAP C) — non-ok checks ranked by cause (root before symptom,
+   * fail before warn). Lets an agent act on the root cause without re-deriving
+   * the ranking. Additive + optional; schema_version stays at 2.
+   */
+  top_issues?: RankedIssue[];
 }
 
 function _penaltyScore(checks: Check[]): number {
@@ -179,6 +186,7 @@ export function computeDoctorReport(checks: Check[]): DoctorReport {
       meta: _penaltyScore(meta),
     },
     checks: tagged,
+    top_issues: rankIssues(tagged),
   };
 }
 
@@ -3568,6 +3576,176 @@ export async function checkCycleFreshness(
  *   - `progress` reporter writes to stderr (heartbeats per check)
  *   - `engine.executeRaw` / handler-leaf calls (the actual probe work)
  */
+/**
+ * issue #1685 (GAP A) — the single authoritative "worker is OOM-looping" signal.
+ *
+ * One `gbrain doctor` line replaces the hours of log archaeology the #1678
+ * incident required: `cap=8192MB, N watchdog kills/24h → raise --max-rss`.
+ *
+ * UNIONS two sources so it's authoritative for BOTH worker modes (CODEX #5):
+ *   - SUPERVISED workers: supervisor audit `worker_exited likely_cause=rss_watchdog`,
+ *     read cross-week (CODEX #7) so a Mon read doesn't lose a Sun loop.
+ *   - BARE `gbrain jobs work`: NO supervisor event is written; the only trace is
+ *     `minion_jobs.error_text = 'aborted: watchdog'` (the same source queue_health
+ *     subcheck 3 reads). Reading supervisor-only would miss bare workers entirely
+ *     and the queue_health cross-reference would point at an unemitted check.
+ *
+ * Cap (CODEX #6): the breaker alert stamps `max_rss_mb`, but a fail from
+ * oomKills>=5 spread over 24h may have no breaker event → no stamped cap. Fall
+ * back to `resolveDefaultMaxRssMb()` so the message always renders a number.
+ *
+ * Returns null when the worker never OOM'd (don't warn installs that never hit
+ * it). Pure-ish: filesystem audit read + one minion_jobs count; no process.exit.
+ * Exported so `test/doctor-worker-oom-loop.test.ts` drives it directly.
+ */
+export async function computeWorkerOomLoopCheck(
+  engine: BrainEngine | null,
+): Promise<Check | null> {
+  let supervisorKills = 0;
+  let capFromBreaker: number | null = null;
+  let breakerTripped = false;
+  try {
+    const { readRecentSupervisorEvents, summarizeCrashes } = await import(
+      '../core/minions/handlers/supervisor-audit.ts'
+    );
+    const events = readRecentSupervisorEvents(24);
+    supervisorKills = summarizeCrashes(events).by_cause.rss_watchdog;
+    // Latest rss_watchdog_loop breaker alert carries the cap the supervisor
+    // spawned with (supervisor.ts:521); its presence also means the breaker
+    // tripped. Walk all events; last one wins for the cap.
+    for (const e of events) {
+      const row = e as Record<string, unknown>;
+      if (e.event === 'health_warn' && row.reason === 'rss_watchdog_loop') {
+        breakerTripped = true;
+        const cap = Number(row.max_rss_mb);
+        if (Number.isFinite(cap) && cap > 0) capFromBreaker = cap;
+      }
+    }
+  } catch {
+    // supervisor-audit read is best-effort; fall through to minion_jobs.
+  }
+
+  let bareWorkerKills = 0;
+  if (engine && engine.kind !== 'pglite') {
+    try {
+      const sql = db.getConnection();
+      const rows: Array<{ cnt: number }> = await sql`
+        SELECT count(*)::int AS cnt
+          FROM minion_jobs
+         WHERE status IN ('dead', 'failed')
+           AND finished_at > now() - interval '24 hours'
+           AND error_text = 'aborted: watchdog'
+      `;
+      bareWorkerKills = rows[0]?.cnt ?? 0;
+    } catch {
+      // minion_jobs may not exist on a fresh brain; best-effort.
+    }
+  }
+
+  // De-dup note (CODEX #5 accepted trade-off): a supervised watchdog kill aborts
+  // in-flight jobs, so it can show in BOTH counts. We accept slight over-count
+  // rather than miss bare workers — the signal is "is it OOM-looping," not an
+  // exact tally. `details` keeps the two sources separate for honesty.
+  const oomKills = supervisorKills + bareWorkerKills;
+  if (oomKills < 1 && !breakerTripped) return null;
+
+  let capMb: number;
+  let capSource: 'breaker' | 'default';
+  if (capFromBreaker !== null) {
+    capMb = capFromBreaker;
+    capSource = 'breaker';
+  } else {
+    let def = 16384;
+    try {
+      const { resolveDefaultMaxRssMb } = await import('../core/minions/rss-default.ts');
+      def = resolveDefaultMaxRssMb();
+    } catch {
+      // keep the conservative ceiling fallback.
+    }
+    capMb = def;
+    capSource = 'default';
+  }
+
+  const fixHint =
+    'raise --max-rss (gbrain jobs work --max-rss <bigger>; auto-sizes to min(0.5×RAM,16GB))';
+  const capLabel = capSource === 'breaker' ? `cap=${capMb}MB` : `cap≈${capMb}MB (auto-sized default)`;
+  const status: Check['status'] = breakerTripped || oomKills >= 5 ? 'fail' : 'warn';
+  return {
+    name: 'worker_oom_loop',
+    status,
+    message:
+      `Worker OOM-looping: ${capLabel}, ${oomKills} watchdog kill(s)/24h → ${fixHint}. ` +
+      `Peak RSS: see worker stderr.`,
+    details: {
+      oom_kills: oomKills,
+      supervisor_kills: supervisorKills,
+      bare_worker_kills: bareWorkerKills,
+      cap_mb: capMb,
+      cap_source: capSource,
+      breaker_tripped: breakerTripped,
+      fix_hint: fixHint,
+    },
+  };
+}
+
+/**
+ * issue #1685 (GAP B) — DB pool reap health (Postgres-only).
+ *
+ * Answers the #1685 line "DB pool reaped N times/hr AND not auto-recovering"
+ * that no existing signal expresses. Reads the pool-recovery audit
+ * (`reconnect()` emits reap_detected / reconnect_succeeded / reconnect_failed):
+ *   - fail: reaps>0 AND reconnect failures>0 → the pool is being reaped and
+ *           rebuilds are throwing (genuinely not recovering).
+ *   - warn: reaps>=10/hr, all recovered → pooler thrash (self-heal works but the
+ *           cap is likely too low / concurrency too high).
+ *   - else: null (quiet — a few reaps that all recovered is normal).
+ *
+ * Returns null on PGLite / no engine / audit-read failure. Exported so
+ * `test/doctor-pool-reap-health.test.ts` drives it directly.
+ */
+export async function computePoolReapHealthCheck(
+  engine: BrainEngine | null,
+): Promise<Check | null> {
+  if (!engine || engine.kind === 'pglite') return null;
+  let r: { reaps: number; recoveries: number; failures: number };
+  try {
+    const { readRecentPoolRecoveries } = await import('../core/audit/pool-recovery-audit.ts');
+    r = readRecentPoolRecoveries(1);
+  } catch {
+    return null;
+  }
+
+  // CODEX (impl review #3): the audit counts independent event kinds — it does
+  // NOT correlate a reconnect_failed to a preceding reap. So `reaps>0 AND
+  // failures>0` would falsely report "not auto-recovering" when a recovered reap
+  // and an unrelated reconnect failure merely co-occur in the same hour. Fail on
+  // the reconnect FAILURES themselves (reconnect throwing is the real, actionable
+  // problem regardless of reaps); report reaps as context, not as a causal claim.
+  if (r.failures > 0) {
+    const fix = 'check DB reachability / credentials (reconnect is throwing)';
+    return {
+      name: 'pool_reap_health',
+      status: 'fail',
+      message:
+        `DB reconnect FAILED ${r.failures}× in last hour (${r.reaps} pooler reap(s) detected) ` +
+        `— reconnect is throwing; ${fix}.`,
+      details: { reaps: r.reaps, recoveries: r.recoveries, failures: r.failures, fix_hint: fix },
+    };
+  }
+  if (r.reaps >= 10) {
+    const fix = 'raise --max-rss or reduce worker concurrency (pooler thrash)';
+    return {
+      name: 'pool_reap_health',
+      status: 'warn',
+      message:
+        `DB pool reaped ${r.reaps}× in last hour (self-heal recovered each) ` +
+        `— ${fix}.`,
+      details: { reaps: r.reaps, recoveries: r.recoveries, failures: r.failures, fix_hint: fix },
+    };
+  }
+  return null;
+}
+
 export async function buildChecks(
   engine: BrainEngine | null,
   args: string[],
@@ -3847,7 +4025,7 @@ export async function buildChecks(
     // shape is the right contract.
     const summary = summarizeCrashes(events);
     const crashes24h = summary.total;
-    const causeStr = `runtime=${summary.by_cause.runtime_error} oom=${summary.by_cause.oom_or_external_kill} unknown=${summary.by_cause.unknown} legacy=${summary.by_cause.legacy}`;
+    const causeStr = `runtime=${summary.by_cause.runtime_error} oom=${summary.by_cause.oom_or_external_kill} rss=${summary.by_cause.rss_watchdog} unknown=${summary.by_cause.unknown} legacy=${summary.by_cause.legacy}${summary.by_cause.rss_watchdog > 0 ? ' (see worker_oom_loop)' : ''}`;
     const maxCrashesEvent = events.filter(e => e.event === 'max_crashes_exceeded').pop() ?? null;
 
     // Only surface a Check if the supervisor was ever observed (stops the
@@ -3884,6 +4062,27 @@ export async function buildChecks(
     }
   } catch {
     // Audit read / import failure is best-effort; skip silently.
+  }
+
+  // 3b-quater. Worker OOM-loop (issue #1685 GAP A) — the single authoritative
+  // "is the worker OOM-looping" line, unioning supervised (supervisor audit)
+  // and bare-worker (minion_jobs watchdog-abort) kills. Returns null when the
+  // worker never OOM'd, so clean installs see nothing.
+  try {
+    const oomCheck = await computeWorkerOomLoopCheck(engine);
+    if (oomCheck) checks.push(oomCheck);
+  } catch {
+    // best-effort.
+  }
+
+  // 3b-quinquies. DB pool reap health (issue #1685 GAP B) — Postgres pooler
+  // reap frequency + recovered-vs-stuck split. Quiet unless reaps thrash or
+  // reconnect is failing.
+  try {
+    const reapCheck = await computePoolReapHealthCheck(engine);
+    if (reapCheck) checks.push(reapCheck);
+  } catch {
+    // best-effort.
   }
 
   // 3b-tris. Stub-guard fire count (last 24h). The v0.34.5 stub guard in
@@ -6207,9 +6406,8 @@ export async function buildChecks(
       if (rssKillCount > 0) {
         problems.push(
           `${rssKillCount} job(s) dead-lettered for RSS-watchdog memory-limit kills in last 24h. ` +
-          `v0.22.14 changed the bare-worker --max-rss default from 0 (off) to 2048 MB. ` +
           `Fix: raise the limit (e.g. \`gbrain jobs work --max-rss 4096\`) or opt out (\`--max-rss 0\`). ` +
-          `See skills/migrations/v0.22.14.md.`
+          `→ see worker_oom_loop for the cap + fix (the authoritative OOM-loop signal).`
         );
       }
       if (promptTooLongCount > 0) {
@@ -6787,6 +6985,25 @@ function outputResults(checks: Check[], json: boolean): boolean {
 
   console.log('\nGBrain Health Check');
   console.log('===================');
+
+  // #1685 GAP C — cause-ranked summary so the operator reads the root cause
+  // first instead of scrolling the full list. Caps at 5; clean brains skip it.
+  const topIssues = report.top_issues ?? [];
+  if (topIssues.length > 0) {
+    console.log('');
+    console.log('Top issues (ranked by cause):');
+    const shown = topIssues.slice(0, 5);
+    for (const issue of shown) {
+      const icon = issue.status === 'fail' ? 'FAIL' : 'WARN';
+      const dn = issue.downstream_of ? ` (likely downstream of ${issue.downstream_of})` : '';
+      console.log(`  [${icon}] ${issue.name}${dn} → ${issue.fix}`);
+    }
+    if (topIssues.length > shown.length) {
+      console.log(`  +${topIssues.length - shown.length} more — see full list below`);
+    }
+    console.log('');
+  }
+
   for (const c of report.checks) {
     const icon = c.status === 'ok' ? 'OK' : c.status === 'warn' ? 'WARN' : 'FAIL';
     console.log(`  [${icon}] ${c.name}: ${c.message}`);

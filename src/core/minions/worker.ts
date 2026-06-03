@@ -771,13 +771,15 @@ export class MinionWorker extends EventEmitter {
     // the engine owns a pool that a transaction-mode pooler can reap. Postgres
     // exposes reconnect(); PGLite (no pooler) doesn't, so the hook is absent
     // and the tick keeps its legacy no-reconnect behavior.
-    const engineReconnect = (this.engine as { reconnect?: () => Promise<void> }).reconnect;
+    const engineReconnect = (this.engine as { reconnect?: (ctx?: { error?: unknown }) => Promise<void> }).reconnect;
     const renewalDeps: LockRenewalDeps = {
       renewLock: (id, tok, dur) => this.queue.renewLock(id, tok, dur),
       audit: lockRenewalAudit,
       now: Date.now,
       setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),
-      ...(engineReconnect ? { reconnect: () => engineReconnect.call(this.engine) } : {}),
+      // Forward the tick's classified error (CODEX impl review #2) so a pooler
+      // reap during lock renewal is audited as reap_detected, not reconnect_other.
+      ...(engineReconnect ? { reconnect: (ctx?: { error?: unknown }) => engineReconnect.call(this.engine, ctx) } : {}),
     };
 
     const lockTimer = setInterval(() => {
