@@ -146,7 +146,18 @@ title but NOT on alias "mikstuck". The Q2 decision (require last-name/alias for 
 + this step's value depend on alias-aware matching. DECIDE in this step: either (a) extend the
 gazetteer to also index frontmatter aliases (broadens recall, aligns with Q2 alias-match
 rule), or (b) accept title-only for v1 and defer alias indexing. Recommend (a) — it's small
-and the Q2 first-name-rejection rule implicitly assumed alias matching works. Register in ALL_PHASES after where discover_entities
+and the Q2 first-name-rejection rule implicitly assumed alias matching works.
+
+**IMPLEMENTED (Steps 5+6) + a critical fix:** extractNerLinks had a verb-only gate —
+returned `pack_unavailable` (ZERO edges) when the active pack declares no `inference.regex`
+verb patterns. gbrain-shake intentionally dropped the VC verbs, so it declares none → the NER
+phase would have reported success while writing 0 edges (the exact silent-empty-graph failure
+this project fixes). FIX: added `emitPlainMentions` mode (default OFF, so existing CLI/job
+callers unchanged) — the gazetteer alone drives plain `mentions` edges, with verb inference
+still layering `typed_ner` when patterns DO exist. Alias indexing (decision a) implemented:
+buildGazetteer indexes frontmatter `aliases` as sibling keys → same target; aliases exempt
+from ignore-list + reject_first_names drops. Step 10 owner: add `ner_link` to CyclePhase
+union + ALL_PHASES + PHASE_SCOPE (phase-scope-coverage test pins it) + !engine-only guard. Register in ALL_PHASES after where discover_entities
 will go (Step 8 slots in before it); update pinning tests minimally for this one phase.
 
 Guidance: this is the payoff step — after Steps 1-4, entity pages exist + are linkable, so

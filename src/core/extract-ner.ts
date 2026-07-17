@@ -17,7 +17,7 @@
 
 import type { BrainEngine } from './engine.ts';
 import type { LinkBatchInput } from './engine.ts';
-import { buildGazetteer, findMentionedEntities, type Gazetteer } from './by-mention.ts';
+import { buildGazetteer, findMentionedEntities, loadNerKnobs, type Gazetteer, type NerKnobs } from './by-mention.ts';
 import { inferLinkTypeFromPack } from './schema-pack/link-inference.ts';
 import { loadActivePackBestEffort } from './schema-pack/best-effort.ts';
 import { linkableTypesFromPack } from './schema-pack/linkable-types.ts';
@@ -38,6 +38,28 @@ export interface ExtractNerOpts {
   gazetteer?: Gazetteer;
   /** Optional progress hook called per processed page. */
   onProgress?: (done: number, total: number, created: number) => void;
+  /**
+   * Step 5 (R6.3): when true, write a PLAIN `mentions` edge (link_kind NULL)
+   * for every gazetteer body match — not just the verb-typed rows. This is the
+   * `ner_link` cycle phase's mode: gbrain-shake declares no `inference.regex`,
+   * so the verb-inference path produces zero edges; the graph-populating value
+   * comes from plain mentions. The CLI (`gbrain extract --ner`) leaves this
+   * OFF to preserve its "typed NER only" contract (plain mentions are the
+   * separate `--by-mention` pass there). Default false.
+   *
+   * When on, the run is NOT gated on the pack having link_types/inference — the
+   * gazetteer alone suffices. Verb inference still runs when the pack has
+   * patterns, layering a typed_ner row on top (distinct link_kind → both rows
+   * coexist under the links UNIQUE constraint).
+   */
+  emitPlainMentions?: boolean;
+  /**
+   * Step 6 (R5): resolved NER precision knobs. When provided, threads the
+   * `rejectFirstNames` rule into the matcher. When omitted, loaded from config
+   * (malformed → defaults + warn). Passed through to `buildGazetteer` when this
+   * fn builds its own gazetteer so allow/ignore lists apply consistently.
+   */
+  knobs?: NerKnobs;
 }
 
 export interface ExtractNerResult {
@@ -103,20 +125,30 @@ export async function extractNerLinks(
   opts: ExtractNerOpts = {},
 ): Promise<ExtractNerResult> {
   const dryRun = opts.dryRun ?? false;
+  const emitPlainMentions = opts.emitPlainMentions ?? false;
 
-  // Pack best-effort: no pack → no inference → nothing to do.
+  // Pack best-effort. Verb inference needs link_types[].inference.regex; the
+  // plain-mentions mode (ner_link phase) does NOT — the gazetteer alone drives
+  // it. So the pack-gate below only short-circuits when we're in verb-only mode
+  // (CLI). In plain-mentions mode a pack with no inference is fine.
   const pack = await loadActivePackBestEffort({ engine } as never);
-  if (!pack || !pack.manifest?.link_types || pack.manifest.link_types.length === 0) {
+  const hasLinkTypes = !!pack?.manifest?.link_types && pack.manifest.link_types.length > 0;
+  const hasRegex = hasLinkTypes
+    ? pack!.manifest.link_types!.some(
+        (lt) => lt.inference && typeof lt.inference === 'object' && 'regex' in lt.inference,
+      )
+    : false;
+  // Verb inference is only possible when the pack has regex patterns.
+  const verbInferenceEnabled = hasRegex;
+  if (!emitPlainMentions && !verbInferenceEnabled) {
+    // CLI/typed-only mode with nothing to infer → nothing to do (unchanged).
     return { pages: 0, created: 0, pack_unavailable: true };
   }
-  // Require at least one link_type with an inference.regex; otherwise NER
-  // has no patterns to match and we'd waste a full walk.
-  const hasRegex = pack.manifest.link_types.some(
-    (lt) => lt.inference && typeof lt.inference === 'object' && 'regex' in lt.inference,
-  );
-  if (!hasRegex) return { pages: 0, created: 0, pack_unavailable: true };
 
-  const gazetteer = opts.gazetteer ?? await buildGazetteer(engine);
+  // Step 6: resolve knobs so the matcher applies reject_first_names, and pass
+  // them into buildGazetteer (allow/ignore lists) when we build our own.
+  const knobs = opts.knobs ?? await loadNerKnobs(engine);
+  const gazetteer = opts.gazetteer ?? await buildGazetteer(engine, { knobs });
   if (gazetteer.size === 0) {
     return { pages: 0, created: 0, pack_unavailable: false };
   }
@@ -167,25 +199,45 @@ export async function extractNerLinks(
     const mentions = findMentionedEntities(body, gazetteer, {
       fromSlug: slug,
       fromSourceId: source_id,
+      rejectFirstNames: knobs.rejectFirstNames,
     });
     if (mentions.length === 0) continue;
 
     for (const m of mentions) {
       const targetType = targetTypeMap.get(`${m.source_id}::${m.slug}`);
       const context = getContextWindow(body, m.offset, m.name.length);
-      const verb = inferNerLinkType(pack.manifest, targetType, context);
-      if (!verb) continue;
+      // Verb inference only when the pack has patterns. In plain-mentions mode
+      // with no patterns this is always null → we fall to the plain edge.
+      const verb = verbInferenceEnabled && pack?.manifest
+        ? inferNerLinkType(pack.manifest, targetType, context)
+        : null;
 
-      batch.push({
-        from_slug: slug,
-        to_slug: m.slug,
-        link_type: verb,
-        link_source: 'mentions',
-        link_kind: 'typed_ner',
-        context: m.name,
-        from_source_id: source_id,
-        to_source_id: m.source_id,
-      });
+      if (verb) {
+        batch.push({
+          from_slug: slug,
+          to_slug: m.slug,
+          link_type: verb,
+          link_source: 'mentions',
+          link_kind: 'typed_ner',
+          context: m.name,
+          from_source_id: source_id,
+          to_source_id: m.source_id,
+        });
+      } else if (emitPlainMentions) {
+        // R6.3: plain `mentions` edge (link_kind NULL). Idempotent via the
+        // links UNIQUE (from, to, type, source, origin) + ON CONFLICT DO NOTHING.
+        batch.push({
+          from_slug: slug,
+          to_slug: m.slug,
+          link_type: 'mentions',
+          link_source: 'mentions',
+          context: m.name,
+          from_source_id: source_id,
+          to_source_id: m.source_id,
+        });
+      } else {
+        continue;
+      }
       if (batch.length >= BATCH_SIZE) await flush();
     }
   }
