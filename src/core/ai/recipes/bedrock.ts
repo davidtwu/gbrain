@@ -63,8 +63,15 @@ export const bedrock: Recipe = {
       default_dims: 1536,
       dims_options: [256, 512, 1024, 1536],
       // Cohere Bedrock caps a single embed request at 96 texts / 128K tokens.
-      // The gateway pre-splits on this aggregate budget.
+      // The gateway pre-splits on BOTH the aggregate token budget and the
+      // per-request text-count cap. The text-count cap matters because Cohere
+      // rejects a 97+ input array with a generic "Invalid parameter
+      // combination" error that does NOT match isTokenLimitError — so the
+      // recursive-halving safety net would never engage without an explicit
+      // pre-split. (A single session transcript chunks into up to ~94 chunks
+      // today; without this cap, larger transcripts silently fail to embed.)
       max_batch_tokens: 128_000,
+      max_batch_texts: 96,
       price_last_verified: '2026-07-07',
       // Embed v4 accepts image inputs (multimodal) on the same endpoint; the
       // proxy forwards content arrays with image_base64 entries.

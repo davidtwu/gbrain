@@ -1441,13 +1441,23 @@ export async function embed(texts: string[], opts?: EmbedOpts): Promise<Float32A
 
   const embedding = recipe.touchpoints?.embedding;
   const maxBatchTokens = embedding?.max_batch_tokens;
+  const maxBatchTexts = embedding?.max_batch_texts;
   const charsPerToken = embedding?.chars_per_token ?? DEFAULT_CHARS_PER_TOKEN;
 
   // Pre-split is gated on max_batch_tokens. Recipes without it (e.g. OpenAI)
   // ride the fast path: one embedMany call, no recursion safety net.
-  const batches = maxBatchTokens
+  const tokenBatches = maxBatchTokens
     ? splitByTokenBudget(truncated, Math.floor(maxBatchTokens * effectiveSafetyFactor(recipe)), charsPerToken)
     : [truncated];
+  // Then cap each sub-batch by the per-request TEXT COUNT (Cohere/Bedrock:
+  // 96 inputs/request). Independent of the token budget — a batch can be well
+  // under 128K tokens but exceed 96 texts, and the provider rejects it with a
+  // generic error that isTokenLimitError() does not match, so recursive
+  // halving never fires. Splitting up front is the only safety net for the
+  // array-length cap. No-op when max_batch_texts is unset.
+  const batches = maxBatchTexts
+    ? tokenBatches.flatMap((b) => splitByCount(b, maxBatchTexts))
+    : tokenBatches;
 
   const allEmbeddings: Float32Array[] = [];
   let _embedThrew = false;
@@ -1521,6 +1531,28 @@ export function splitByTokenBudget(
   }
   if (current.length > 0) batches.push(current);
 
+  return batches;
+}
+
+/**
+ * Split texts into sub-batches of at most `maxCount` items, preserving order.
+ * Complements `splitByTokenBudget` for providers that cap the per-request
+ * ARRAY LENGTH (number of inputs) as well as the aggregate token count
+ * (e.g. Cohere Embed v4 on Bedrock: 96 texts/request). Pure; no module state.
+ *
+ * @param texts - The texts to partition (already token-budget-split).
+ * @param maxCount - Maximum items per sub-batch. Values < 1 are treated as 1
+ *   so a misconfigured recipe can't produce empty/infinite partitions.
+ *
+ * @internal exported for tests; not part of the public gateway API.
+ */
+export function splitByCount(texts: string[], maxCount: number): string[][] {
+  const cap = Math.max(1, Math.floor(maxCount));
+  if (texts.length <= cap) return texts.length > 0 ? [texts] : [];
+  const batches: string[][] = [];
+  for (let i = 0; i < texts.length; i += cap) {
+    batches.push(texts.slice(i, i + cap));
+  }
   return batches;
 }
 

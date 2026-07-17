@@ -55,6 +55,17 @@ export interface EmbeddingTouchpoint {
    */
   safety_factor?: number;
   /**
+   * Maximum NUMBER OF TEXTS (input items) per embedding request. Independent
+   * of `max_batch_tokens`: some providers cap the array length as well as the
+   * aggregate token count, and reject an over-length array with a generic
+   * error that does NOT match `isTokenLimitError` (so recursive halving never
+   * engages). Cohere Embed v4 on Bedrock caps at 96 texts/request and rejects
+   * a 97+ array with "Invalid parameter combination". When set, the gateway
+   * pre-splits so no request carries more than this many inputs, in addition
+   * to the token-budget split. When unset, only the token budget governs.
+   */
+  max_batch_texts?: number;
+  /**
    * v0.27.1: when true, at least one model in this recipe accepts image
    * inputs via a multimodal embedding endpoint (e.g. Voyage's
    * /v1/multimodalembeddings). Drives gateway.embedMultimodal() routing.

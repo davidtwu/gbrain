@@ -34,6 +34,7 @@ import {
   resetGateway,
   embed,
   splitByTokenBudget,
+  splitByCount,
   isTokenLimitError,
   __setEmbedTransportForTests,
   __getShrinkStateForTests,
@@ -139,6 +140,86 @@ describe('splitByTokenBudget (pure helper)', () => {
     const texts = ['a'.repeat(40_000)];
     expect(splitByTokenBudget(texts, 96_000, 0)).toEqual(splitByTokenBudget(texts, 96_000, 4));
     expect(splitByTokenBudget(texts, 96_000, -1)).toEqual(splitByTokenBudget(texts, 96_000, 4));
+  });
+});
+
+describe('splitByCount (pure helper)', () => {
+  test('empty input returns empty array', () => {
+    expect(splitByCount([], 96)).toEqual([]);
+  });
+
+  test('fewer items than cap stay in one batch', () => {
+    const texts = Array.from({ length: 10 }, (_, i) => `t${i}`);
+    expect(splitByCount(texts, 96)).toEqual([texts]);
+  });
+
+  test('exactly at the cap stays in one batch', () => {
+    const texts = Array.from({ length: 96 }, (_, i) => `t${i}`);
+    const result = splitByCount(texts, 96);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toHaveLength(96);
+  });
+
+  test('one over the cap splits into two batches (the Cohere 97-input case)', () => {
+    const texts = Array.from({ length: 97 }, (_, i) => `t${i}`);
+    const result = splitByCount(texts, 96);
+    expect(result.map(b => b.length)).toEqual([96, 1]);
+    // Order preserved across the boundary.
+    expect(result.flat()).toEqual(texts);
+  });
+
+  test('multiple full batches + remainder', () => {
+    const texts = Array.from({ length: 250 }, (_, i) => `t${i}`);
+    const result = splitByCount(texts, 96);
+    expect(result.map(b => b.length)).toEqual([96, 96, 58]);
+    expect(result.flat()).toEqual(texts);
+  });
+
+  test('cap < 1 is clamped to 1 (no empty/infinite partitions)', () => {
+    const texts = ['a', 'b', 'c'];
+    expect(splitByCount(texts, 0).map(b => b.length)).toEqual([1, 1, 1]);
+    expect(splitByCount(texts, -5).map(b => b.length)).toEqual([1, 1, 1]);
+  });
+});
+
+describe('embed() text-count cap (Cohere/Bedrock 96-input regression)', () => {
+  beforeEach(() => resetGateway());
+  afterEach(() => __setEmbedTransportForTests(null));
+
+  test('splits a >96-text batch so no request exceeds the cap even when the whole batch fits the token budget', async () => {
+    // Bedrock/Cohere: max_batch_texts=96. 97 tiny texts fit the 128K token
+    // budget in one token-batch, but must still split by count. Without the
+    // fix this fired a single 97-input request that Cohere rejects with
+    // "Invalid parameter combination" (NOT a token-limit error, so recursive
+    // halving never engages — the whole page fails to embed).
+    configureGateway({
+      embedding_model: 'bedrock:us.cohere.embed-v4:0',
+      embedding_dimensions: 1536,
+      env: { BEDROCK_PROXY_BASE_URL: 'http://localhost:4000' },
+    });
+
+    const stub = mock(async ({ values }: { values: string[] }) => {
+      // Assert the invariant under test: no request ever exceeds 96 inputs.
+      if (values.length > 96) {
+        throw new Error('Invalid parameter combination. Please check and try again.');
+      }
+      return fakeEmbeddings(values, 1536);
+    });
+    __setEmbedTransportForTests(stub as any);
+
+    const texts = Array.from({ length: 97 }, (_, i) => `t${i}`);
+    const result = await embed(texts);
+
+    // Two requests: 96 + 1.
+    expect(stub).toHaveBeenCalledTimes(2);
+    const callLengths = stub.mock.calls.map(([arg]) => (arg as { values: string[] }).values.length);
+    expect(callLengths).toEqual([96, 1]);
+    // All 97 embeddings returned in input order.
+    expect(result).toHaveLength(97);
+    expect(result.map(v => v[0])).toEqual([
+      ...Array.from({ length: 96 }, (_, i) => i),
+      0, // second sub-batch restarts the within-call index
+    ]);
   });
 });
 
