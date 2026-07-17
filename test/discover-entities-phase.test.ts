@@ -351,3 +351,49 @@ describe('contentHash', () => {
     expect(contentHash(body, 'people/alice')).toBe(contentHash(body, 'people/alice'));
   });
 });
+
+// ─── Default model resolution (regression: the live-run bare-id bug) ──
+// The first live run produced ZERO proposals because the phase passed a bare
+// model id ('claude-opus-4-8') to the gateway, which rejects ids without a
+// `provider:` prefix — every page soft-failed. All prior tests injected either
+// opts.extractor OR an explicit model, so none exercised the DEFAULT resolution
+// path. These assert the model the extractor actually receives is provider-
+// prefixed (i.e. gateway-valid) when no explicit model is given.
+describe('discover_entities — default model is provider-prefixed (gateway-valid)', () => {
+  test('the resolved default model carries a provider: prefix', async () => {
+    await seedSourcePage('doppelganger-cortex/meetings__m1', 'meeting', 'Sync with the team about the returns project.');
+    let capturedModel: string | undefined;
+    // Capture-only extractor: records the modelHint the phase resolved, returns nothing.
+    const capture: DiscoverEntitiesExtractor = async ({ modelHint }) => {
+      capturedModel = modelHint;
+      return [];
+    };
+    await runPhaseDiscoverEntities(buildCtx(engine), {
+      extractor: capture,
+      budgetUsd: 0,
+      brainBudgetUsd: 0,
+      // NO explicit model → exercises the resolveModel/default fallback path.
+    });
+    expect(capturedModel).toBeDefined();
+    // The load-bearing assertion: must have a provider prefix, else the gateway
+    // rejects it and discovery silently produces zero proposals.
+    expect(capturedModel).toContain(':');
+    expect(capturedModel!.split(':')[0]).toMatch(/^[a-z][a-z0-9-]*$/); // e.g. bedrock, anthropic
+  });
+
+  test('config chat_model (provider-prefixed) is honored over the fallback', async () => {
+    await seedSourcePage('doppelganger-cortex/meetings__m2', 'meeting', 'Another sync.');
+    // resolveModel reads engine config (not ctx.config), mirroring `gbrain think`.
+    await engine.setConfig('chat_model', 'bedrock:us.anthropic.claude-opus-4-8');
+    let capturedModel: string | undefined;
+    const capture: DiscoverEntitiesExtractor = async ({ modelHint }) => {
+      capturedModel = modelHint;
+      return [];
+    };
+    await runPhaseDiscoverEntities(
+      buildCtx(engine),
+      { extractor: capture, budgetUsd: 0, brainBudgetUsd: 0 },
+    );
+    expect(capturedModel).toBe('bedrock:us.anthropic.claude-opus-4-8');
+  });
+});

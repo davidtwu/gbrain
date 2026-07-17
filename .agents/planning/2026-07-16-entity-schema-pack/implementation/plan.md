@@ -24,6 +24,22 @@ Branch: `feat/entity-schema-pack` (gbrain-src). Live engine: Postgres (:5433, co
       (125) — real collaborators. 1,220 pages now connected. No LLM discovery run yet (needs
       proxy; deferred to next daily cycle / on-demand).
 
+## POST-SHIP FIX (discovery live-run bug)
+First live `discover_entities` run produced ZERO proposals — a bug in our Step 8 code, not
+the environment. `discover-entities.ts:60` hardcoded a BARE model id `'claude-opus-4-8'`
+(no provider prefix); the gateway's model-resolver rejects bare ids, so every page
+soft-failed (caught per-page by design) and the phase reported a FICTIONAL "budget
+exhausted". Step 8 tests missed it because they all injected a stub extractor OR an explicit
+model — none exercised default model resolution.
+FIX: (a) default constant → provider-prefixed `bedrock:us.anthropic.claude-opus-4-8`;
+(b) resolve through `resolveModel(engine, {configKey:'chat_model', fallback})` — same path
+`gbrain think` uses, carries the prefix from config. Added 2 regression tests asserting the
+extractor receives a provider-prefixed model (default + config-honored). 20/20 pass, tsc clean.
+KNOWN residual (non-blocking): BudgetMeter has no pricing for the Bedrock model
+(`BUDGET_METER_NO_PRICING`), so the $0.50/src cap fails OPEN — discovery is currently
+un-budget-gated. File a follow-up to add Bedrock pricing to the meter (per-provider pricing
+is a pre-existing v0.29 TODO in the codebase).
+
 ## STATUS: COMPLETE. gbrain-shake active on the live brain; graph populated.
 Reversibility intact: `gbrain backfill-entity-types --revert` + restore config.json.pre-shake-bak
 + deactivate pack. Snapshot table backfill_entity_types_20260716 holds 112 rows.
