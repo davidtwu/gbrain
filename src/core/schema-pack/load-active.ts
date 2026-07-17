@@ -112,6 +112,11 @@ function defaultPackLocator(name: string): string | null {
     // Ships as install default (Lane E T17) + via gbrain onboard pack
     // upgrade flow (the unify-types Minion handler).
     'gbrain-base-v2',
+    // v0.42 entity-schema-pack: corpus-matched entity pack (SHAKE team).
+    // Registered here so `gbrain schema lint gbrain-shake` resolves the
+    // bundled YAML. Registration is INERT — it does NOT set the pack active
+    // (activation is Step 4: `gbrain config set schema_pack gbrain-shake`).
+    'gbrain-shake',
   ];
   if (BUNDLED.includes(name)) {
     // Resolve bundled YAML relative to this source file. Works in both

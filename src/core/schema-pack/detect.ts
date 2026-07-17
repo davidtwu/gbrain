@@ -78,6 +78,7 @@ export function buildCandidate(opts: {
       aliases: [],
       extractable: false,
       expert_routing: false,
+      linkable: false,
     };
   });
 

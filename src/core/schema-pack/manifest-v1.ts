@@ -132,6 +132,27 @@ const PageTypeSchema = z.object({
    */
   expert_routing: z.boolean().default(false),
   /**
+   * v0.42 (entity-schema-pack) — whether this type is a gazetteer LINK TARGET
+   * for the mention/NER pass. Replaces the hardcoded
+   * LINKABLE_ENTITY_TYPES = ['person','company','organization','entity'] const
+   * in by-mention.ts + the twin type filter in extract-ner.ts. Defaults to
+   * false, mirroring the existing `expert_routing` / `extractable` per-type
+   * boolean pattern. The code that READS this flag (buildGazetteer /
+   * buildTargetTypeMap / linkableTypesFromPack helper) lands in Step 2; this
+   * field is declared here so pack manifests can carry `linkable:` at parse
+   * time. Base packs mark person/company/organization/entity `linkable: true`
+   * (Step 2) to preserve byte-for-byte pre-existing gazetteer behavior.
+   *
+   * PROVISIONAL SHAPE (Step 1): declared `.optional()` rather than
+   * `.default(false)` for the same reason `subtypes` above is optional — so
+   * existing v0.38 manifest casts in test fixtures don't need re-typing, and
+   * the blast radius of introducing the field stays contained to this file +
+   * the pack YAML. Step 2 OWNS finalizing this to `.default(false)` alongside
+   * the consumer rewiring (by-mention.ts / extract-ner.ts / linkableTypesFromPack)
+   * and the base-pack `linkable: true` markings; consumers read `pt.linkable ?? false`.
+   */
+  linkable: z.boolean().optional(),
+  /**
    * v0.42 (T3, plan D5): per-type subtype declarations. `media` declaring
    * subtypes: [{name: video, when: {path_pattern: "^videos/"}}] means
    * inferTypeAndSubtypeFromPack returns `{type: 'media', subtype: 'video'}`

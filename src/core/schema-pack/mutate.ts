@@ -515,6 +515,7 @@ export async function addTypeToPack(packName: string, opts: AddTypeOpts, mutateO
       aliases: opts.aliases ?? [],
       extractable: opts.extractable ?? false,
       expert_routing: opts.expertRouting ?? false,
+      linkable: false,
     };
     return { ...m, page_types: [...m.page_types, newType] };
   }, 'add_type', { type: opts.name, prefix: opts.prefix });
