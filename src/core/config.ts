@@ -948,7 +948,30 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
 
 export function saveConfig(config: GBrainConfig): void {
   mkdirSync(getConfigDir(), { recursive: true });
-  writeFileSync(getConfigPath(), JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+  // Defense-in-depth (merge-on-write): shallow-merge the incoming config over
+  // whatever is already on disk, so a caller that hands us a partial object can
+  // never silently DROP a top-level key it simply didn't know about. Incoming
+  // keys win (`{ ...onDisk, ...config }`); keys absent from `config` survive
+  // from disk. This closes the init.ts-class clobber (a `{ ...existingFile, ...,
+  // schema_pack: X }` object where an always-truthy term overwrote a preserved
+  // value) for ANY current or future caller, not just init.
+  //
+  // Deliberately SHALLOW (top-level only): a deep merge would resurrect nested
+  // keys a caller intentionally removed (e.g. rewriting `config.mcp = {...}`),
+  // which is surprising and worse than the bug we're guarding. Callers that
+  // want to drop a top-level key must already spread the existing file
+  // themselves (as init does) — full-object semantics for the keys they own.
+  //
+  // Guard against a missing/corrupt file: fall back to writing `config` as-is.
+  let onDisk: Record<string, unknown> = {};
+  try {
+    onDisk = JSON.parse(readFileSync(getConfigPath(), 'utf-8')) as Record<string, unknown>;
+  } catch {
+    // No existing file, or it's unparseable — nothing to preserve.
+    onDisk = {};
+  }
+  const merged = { ...onDisk, ...config } as GBrainConfig;
+  writeFileSync(getConfigPath(), JSON.stringify(merged, null, 2) + '\n', { mode: 0o600 });
   try {
     chmodSync(getConfigPath(), 0o600);
   } catch {

@@ -44,10 +44,16 @@ export async function runInit(args: string[]) {
   // gbrain-base opts back to the legacy 24-type pack for users who don't
   // want the new taxonomy on day one. Existing brains stay on whatever
   // schema_pack their config.json already says.
+  //
+  // schemaPack is `undefined` when the flag is absent — this is load-bearing.
+  // The init functions resolve `opts.schemaPack ?? existingFile.schema_pack ??
+  // 'gbrain-base-v2'`, so a re-init WITHOUT --schema-pack preserves an existing
+  // brain's pack instead of silently resetting it. Defaulting to a truthy
+  // string here would always clobber the existing value on re-init.
   const schemaPackIdx = args.indexOf('--schema-pack');
   const schemaPack = schemaPackIdx !== -1 && args[schemaPackIdx + 1]
     ? args[schemaPackIdx + 1]
-    : 'gbrain-base-v2';
+    : undefined;
 
   // Multi-topology v1: thin-client init. Skips local engine entirely; writes
   // remote_mcp config that the CLI dispatch guard reads to refuse DB-bound ops.
@@ -670,11 +676,12 @@ async function initRemoteMcp(opts: {
         : { oauth_client_secret: clientSecret }),
     },
   };
-  // database_url / database_path get explicitly removed when converting; the
-  // spread above with `undefined` doesn't drop them in JSON, so prune.
-  const configRecord = config as unknown as Record<string, unknown>;
-  delete configRecord.database_url;
-  delete configRecord.database_path;
+  // database_url / database_path are set to `undefined` in baseConfig above
+  // when converting from a local engine. Leave them as present-with-undefined:
+  // JSON.stringify drops undefined values, so they don't land on disk, AND
+  // saveConfig's merge-on-write ({ ...onDisk, ...config }) sees them as own
+  // properties that override the stale on-disk values. Do NOT `delete` them —
+  // a deleted (absent) key would be resurrected from disk by the merge.
   saveConfig(config);
 
   if (jsonOutput) {
@@ -937,10 +944,12 @@ async function initPGLite(opts: {
           : {}),
       ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
       ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
-      // v0.42 (T17): default new brains to the schema_pack selected at init
-      // time. Existing config.schema_pack survives (...existingFile spread)
-      // unless explicitly overridden by --schema-pack on re-init.
-      ...(opts.schemaPack ? { schema_pack: opts.schemaPack } : {}),
+      // v0.42 (T17): resolve the schema pack so it can never silently reset on
+      // re-init. Explicit --schema-pack (opts.schemaPack) wins; otherwise an
+      // existing brain's pack is preserved; only a genuinely fresh brain (no
+      // flag, no existing value) falls back to the v0.42 default. NOTE: this
+      // key MUST come after `...existingFile` — it is the authoritative value.
+      schema_pack: opts.schemaPack ?? existingFile.schema_pack ?? 'gbrain-base-v2',
     };
     // PR1: new installs publish their skill catalog over MCP by default
     // (existing config wins on re-init, so a prior opt-out is preserved).
@@ -950,9 +959,15 @@ async function initPGLite(opts: {
     // also fire on a fresh install. Hands-off: gbrain config set self_upgrade.mode auto
     config.self_upgrade = { mode: 'notify', mode_prompted: true, ...(config.self_upgrade ?? {}) };
     saveConfig(config);
+    // Only advertise the override hint when the flag was actually supplied;
+    // for the resolved (preserved / default) case just report the effective pack.
     if (opts.schemaPack) {
       process.stderr.write(
         `[init] Using schema pack: ${opts.schemaPack} (override with --schema-pack <name>)\n`,
+      );
+    } else {
+      process.stderr.write(
+        `[init] Using schema pack: ${config.schema_pack} (override with --schema-pack <name>)\n`,
       );
     }
 
@@ -1181,8 +1196,10 @@ async function initPostgres(opts: {
           : {}),
       ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
       ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
-      // v0.42 (T17): same schema_pack default as PGLite path.
-      ...(opts.schemaPack ? { schema_pack: opts.schemaPack } : {}),
+      // v0.42 (T17): same schema_pack resolution as the PGLite path. Explicit
+      // --schema-pack wins; else preserve an existing brain's pack; else the
+      // fresh-brain default. MUST come after `...existingFile` to be authoritative.
+      schema_pack: opts.schemaPack ?? existingFile.schema_pack ?? 'gbrain-base-v2',
     };
     // PR1: new installs publish their skill catalog over MCP by default
     // (existing config wins on re-init, so a prior opt-out is preserved).
@@ -1193,9 +1210,15 @@ async function initPostgres(opts: {
     config.self_upgrade = { mode: 'notify', mode_prompted: true, ...(config.self_upgrade ?? {}) };
     saveConfig(config);
     console.log('Config saved to ~/.gbrain/config.json');
+    // Only advertise the override hint when the flag was actually supplied;
+    // for the resolved (preserved / default) case just report the effective pack.
     if (opts.schemaPack) {
       process.stderr.write(
         `[init] Using schema pack: ${opts.schemaPack} (override with --schema-pack <name>)\n`,
+      );
+    } else {
+      process.stderr.write(
+        `[init] Using schema pack: ${config.schema_pack} (override with --schema-pack <name>)\n`,
       );
     }
 
