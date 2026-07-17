@@ -114,6 +114,12 @@ export {
 } from './expert-types.ts';
 
 export {
+  linkableTypesFromPack,
+  linkableTypesFromManifest,
+  LINKABLE_ENTITY_TYPES,
+} from './linkable-types.ts';
+
+export {
   extractableTypesFromPack,
   extractableSpecsFromPack,
   getExtractableSpec,

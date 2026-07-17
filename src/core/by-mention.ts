@@ -28,9 +28,15 @@
 
 import type { BrainEngine } from './engine.ts';
 import { stripCodeBlocks } from './link-extraction.ts';
+import { LINKABLE_ENTITY_TYPES, linkableTypesFromPack } from './schema-pack/linkable-types.ts';
 
-/** D2: hardcoded entity types for v1. Pack-aware extension is TODO-1. */
-export const LINKABLE_ENTITY_TYPES = ['person', 'company', 'organization', 'entity'] as const;
+/**
+ * Legacy hardcoded gazetteer link-target types. Re-exported from
+ * `schema-pack/linkable-types.ts` (the single source of truth as of Step 2 /
+ * R4). Retained here for back-compat with importers + the regression pin.
+ * The FALLBACK when the active pack has not adopted the `linkable` flag.
+ */
+export { LINKABLE_ENTITY_TYPES };
 
 /**
  * Minimum title length for gazetteer inclusion. Filters out 2-3 char names
@@ -156,7 +162,12 @@ export async function buildGazetteer(
   engine: BrainEngine,
   opts: BuildGazetteerOpts = {},
 ): Promise<Gazetteer> {
-  const typeList = LINKABLE_ENTITY_TYPES.map(t => `'${t}'`).join(', ');
+  // Step 2 / R4: linkable target types come from the active pack (pack-aware),
+  // falling back to the legacy LINKABLE_ENTITY_TYPES const when the pack has
+  // not adopted the `linkable` flag. Empty type list → empty gazetteer.
+  const linkableTypes = await linkableTypesFromPack(engine);
+  if (linkableTypes.length === 0) return new Map();
+  const typeList = linkableTypes.map(t => `'${t.replace(/'/g, "''")}'`).join(', ');
   const rows = await engine.executeRaw<{ slug: string; source_id: string | null; title: string | null }>(
     `SELECT slug, source_id, title
      FROM pages

@@ -99,6 +99,14 @@ Verified against base-v2 + live corpus:
   extract-ner.ts read linkable types from the active pack manifest, not a hardcoded const.
 - R4.3 Base packs (`gbrain-base`, `gbrain-base-v2`) mark person/company/organization/entity
   `linkable: true` so pre-existing behavior is byte-for-byte preserved.
+  ⚠️ **CORRECTED IN IMPL (Step 2):** un-executable as written — base-v2 does NOT declare
+  `organization`/`entity` as page-type NAMES (`organization` is an alias of `company`;
+  `entity` is a primitive). Parity is instead preserved via the CONST FALLBACK:
+  `linkableTypesFromPack` returns the legacy {person,company,organization,entity} const when a
+  pack doesn't adopt the `linkable` flag; flagged packs (gbrain-shake) return {person,project}.
+  Base YAMLs left UNTOUCHED; byte-for-byte parity proven by test. **Step 4 must check the live
+  DISTINCT-type set: any pages stored as type=organization/entity would be uncovered by
+  gbrain-shake and abort the guard unless declared.**
 - R4.4 The 4-type filter copies in onboard/checks, impact-capture, init-nudge, doctor are
   audited; those that gate *linking* move to the pack-aware helper, those that gate
   *expert-routing* are left alone.

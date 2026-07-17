@@ -20,6 +20,7 @@ import type { LinkBatchInput } from './engine.ts';
 import { buildGazetteer, findMentionedEntities, type Gazetteer } from './by-mention.ts';
 import { inferLinkTypeFromPack } from './schema-pack/link-inference.ts';
 import { loadActivePackBestEffort } from './schema-pack/best-effort.ts';
+import { linkableTypesFromPack } from './schema-pack/linkable-types.ts';
 
 export interface ExtractNerOpts {
   /** When true: enumerate but don't write. */
@@ -201,9 +202,15 @@ export async function extractNerLinks(
 async function buildTargetTypeMap(engine: BrainEngine): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   try {
+    // Step 2 / R4: target types come from the active pack (pack-aware), the
+    // twin of buildGazetteer's filter. Falls back to LINKABLE_ENTITY_TYPES
+    // when the pack has not adopted the `linkable` flag. Empty → empty map.
+    const linkableTypes = await linkableTypesFromPack(engine);
+    if (linkableTypes.length === 0) return map;
+    const typeList = linkableTypes.map(t => `'${t.replace(/'/g, "''")}'`).join(', ');
     const result = await engine.executeRaw<{ slug: string; source_id: string; type: string }>(
       `SELECT slug, source_id, type FROM pages
-         WHERE type IN ('person', 'company', 'organization', 'entity')
+         WHERE type IN (${typeList})
            AND deleted_at IS NULL`,
     );
     for (const row of result) {
