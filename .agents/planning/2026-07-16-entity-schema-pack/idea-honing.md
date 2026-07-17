@@ -218,6 +218,15 @@ set. Verified against base-v2 + live corpus:
 
 **Checkpoint rulings (CONFIRMED):**
 - slack: **`slack-channel` = alias of `slack`** (one temporal type, less surface).
+  ⚠️ **CORRECTION (Step 1 impl finding):** the `*unknown*→note` catch-all matches on type
+  NAMES only — aliases do NOT exempt a type from runtime flattening (unify-types-handler.ts:189).
+  So the slack-channel alias satisfies the R1b coverage TEST but is NOT a runtime shield.
+  RESOLUTION: the backfill (Step 3) will ALSO retype the 103 `slack-channel` pages → `slack`
+  (a declared name), so stored type is catch-all-safe; the alias then only handles future
+  stragglers. Step 4's pre-activation coverage guard MUST treat alias-only coverage as
+  INSUFFICIENT (require a declared type NAME, not just an alias). Also: reference /
+  extract_receipt / vault-cleanup are declared as their OWN named types (not aliases) —
+  extract_receipt especially is a live system type search-boost + anti-loop guards key on.
 - VC link verbs: **DROP** founded/invested_in/led_round/yc_partner/advises from gbrain-shake
   (no-merge means we hand-author the verb list; these are dead for Amazon PE work). Keep
   mentions/relates_to/discusses/works_at/attended.

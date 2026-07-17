@@ -79,6 +79,12 @@ Objective: `src/commands/backfill-entity-types.ts` with `--dry-run/--apply/--rev
 doppelganger-cortex/relationships__*→person, initiatives__*→project, meetings__*→meeting.
 Snapshot-before-write; idempotent; wrong-brain guard.
 
+**ADDED (Step 1 finding):** ALSO retype the 103 `slack-channel` pages → `slack` (a DECLARED
+type NAME). Reason: the `*unknown*→note` catch-all matches on names only, NOT aliases — so the
+slack-channel alias is not a runtime shield. Backfilling to the declared `slack` name makes
+those pages catch-all-safe. Snapshot them too (reversible). This is the ONLY type-family where
+alias≠safety bit us; reference/extract_receipt/vault-cleanup are declared as own names in the pack.
+
 Guidance: reuse backfill-base.ts idioms (keyset pagination, reserved connection, config
 checkpoint). Snapshot table NOT in static schema (disposable). `--apply` requires prior
 `--dry-run` or `--yes`.
@@ -107,6 +113,13 @@ staging, gated on active pack == gbrain-shake.
 Guidance: the coverage guard is the safety net that makes R1b enforceable — it prevents the
 `*unknown*→note` catch-all from flattening the 2,862 undeclared-type pages. Run backfill
 (Step 3 --apply) BEFORE activation so entity pages are already typed.
+
+**CRITICAL (Step 1 finding):** the coverage guard MUST require every stored type to match a
+declared type NAME — alias coverage is INSUFFICIENT, because the catch-all
+(unify-types-handler.ts:189) exempts on names only, not aliases. So the guard's covered-set =
+pack type NAMES only (not names∪aliases). Any stored type that maps only to an alias (e.g.
+slack-channel before Step 3's backfill) must be flagged uncovered → abort. This is why Step 3
+retypes slack-channel→slack first.
 
 Tests: coverage check passes for shake against the live type set; fails (with list) for a
 deliberately-incomplete fixture pack. Collector test: staging a Relationships file rewrites
