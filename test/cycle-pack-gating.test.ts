@@ -140,14 +140,21 @@ describe('v0.41 T9 R-GATE: pre-existing 17 core phases always run', () => {
   // must still see all 17 pre-existing phases run as before. The static
   // assertion: only the 2 new lens-pack phases reference packDeclaresPhase
   // in the dispatch.
-  test('only extract_atoms + synthesize_concepts dispatch sites reference packDeclaresPhase', () => {
+  test('only the pack-gated lens/entity phases dispatch sites reference packDeclaresPhase', () => {
     const matches = cycleTsSrc.match(/packDeclaresPhase\(engine, '[^']+'\)/g) ?? [];
     const phaseNames = matches.map((m) => {
       const inner = /packDeclaresPhase\(engine, '([^']+)'\)/.exec(m);
       return inner ? inner[1] : '';
     });
-    // Should be EXACTLY two phases gated.
-    expect(phaseNames.sort()).toEqual(['extract_atoms', 'synthesize_concepts']);
+    // v0.43: the gbrain-shake entity pack added two more pack-gated phases
+    // (discover_entities + ner_link) alongside the v0.41 lens-pack phases.
+    // The set of orchestrator-gated phases is EXACTLY these four.
+    expect(phaseNames.sort()).toEqual([
+      'discover_entities',
+      'extract_atoms',
+      'ner_link',
+      'synthesize_concepts',
+    ]);
   });
 
   test('extract_facts dispatch does NOT consult packDeclaresPhase', () => {
@@ -178,9 +185,11 @@ describe('v0.41 T9 R-GATE: dispatch result envelope', () => {
   });
 
   test('synthesize_concepts not_in_active_pack uses the same marker (semantic consistency)', () => {
-    // Both phases should use identical reason marker — doctor can match
-    // a single string across both pack-gated skip events.
+    // All pack-gated phases should use the identical reason marker — doctor
+    // can match a single string across every pack-gated skip event. v0.43
+    // added discover_entities + ner_link, so there are now four occurrences
+    // (extract_atoms, synthesize_concepts, discover_entities, ner_link).
     const occurrences = (cycleTsSrc.match(/reason: 'not_in_active_pack'/g) ?? []).length;
-    expect(occurrences).toBe(2);
+    expect(occurrences).toBe(4);
   });
 });

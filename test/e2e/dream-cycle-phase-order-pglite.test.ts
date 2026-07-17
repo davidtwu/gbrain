@@ -119,6 +119,8 @@ const EXPECTED_PHASES: CyclePhase[] = [
   'extract',
   'extract_facts',               // v0.32.2 — reconcile fence → DB facts index
   'extract_atoms',               // v0.41 T9 — atom extraction (pack-gated)
+  'discover_entities',           // v0.43 — entity discovery (pack-gated, gbrain-shake)
+  'ner_link',                    // v0.43 — NER mention-linking (pack-gated, gbrain-shake)
   'resolve_symbol_edges',       // v0.33.3 — within-file symbol resolution
   'patterns',
   'synthesize_concepts',         // v0.41 T9 — concept synthesis (pack-gated)

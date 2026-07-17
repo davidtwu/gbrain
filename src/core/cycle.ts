@@ -79,6 +79,23 @@ export type CyclePhase =
   //    concept pages via dedup → tier → Sonnet T1/T2 voice-gated narratives.
   //    Same pack-gate model.
   | 'extract_atoms' | 'synthesize_concepts'
+  // v0.43 (gbrain-shake entity pack) — two DB-sourced, pack-gated phases that
+  // grow the entity graph. Both are gated on the active pack's `phases:`
+  // declaration (only gbrain-shake declares them today) and guard on `!engine`
+  // ONLY — never brainDir (they read pages from the engine, not an on-disk
+  // checkout, so they run on checkout-less Postgres/remote brains where the
+  // FS-gated `extract` phase skips).
+  //  - discover_entities: LLM (Bedrock Opus) scans recent source pages and
+  //    proposes NEW person/project entities to the `entity_proposals` review
+  //    queue (never auto-creates pages — explicit accept via `gbrain entities
+  //    propose --accept` / the entity_proposals_act MCP tool is the only
+  //    queue→page path). Budget-metered.
+  //  - ner_link: deterministic (no LLM) gazetteer pass that writes plain
+  //    `mentions` edges from source pages to the linkable entity pages. Runs
+  //    AFTER discover_entities in ALL_PHASES; because discovery only writes
+  //    PROPOSALS (manual accept), create→link is cross-cycle (an accepted
+  //    entity becomes a gazetteer target on the NEXT cycle), not same-cycle.
+  | 'discover_entities' | 'ner_link'
   // v0.41.11.0 — opt-in (default OFF) bulk fact extraction for long-form
   // conversation pages. The phase wrapper does its own multi-source
   // iteration directly (PHASE_SCOPE='source' here is taxonomy only;
@@ -116,6 +133,20 @@ export const ALL_PHASES: CyclePhase[] = [
   // resolution sweep mid-flight. Pack-gate via active pack's `phases:`
   // declaration (gbrain-creator + gbrain-everything declare; others skip).
   'extract_atoms',
+  // v0.43 (gbrain-shake entity pack) — entity discovery + NER linking. Both
+  // pack-gated (only gbrain-shake declares them) and DB-sourced (guard on
+  // !engine, never brainDir). Ordered discover_entities BEFORE ner_link per
+  // design §3.2: discovery proposes NEW entities to the review queue; NER
+  // links source pages to already-committed entity pages. Because discovery
+  // only writes PROPOSALS (manual accept), the create→link handoff is
+  // cross-cycle — an accepted entity is linkable on the NEXT cycle, not this
+  // one. Slotted here (after extract_atoms, before resolve_symbol_edges) so
+  // discovery sits alongside the other pack-gated per-source content-derivation
+  // phase, and NER's new mentions edges land before the symbol-resolution +
+  // patterns passes read graph state. Position MUST match the runCycle dispatch
+  // order (pinned by cycle.serial.test.ts + dream-cycle-phase-order).
+  'discover_entities',
+  'ner_link',
   // v0.33.3 W0c — within-file two-pass symbol resolution. Runs AFTER
   // extract + extract_facts so any code edges sync emitted (still bare-token)
   // get resolved into {resolved_chunk_id: N} / {ambiguous: true,
@@ -230,6 +261,14 @@ export const PHASE_SCOPE: Record<CyclePhase, PhaseScope> = {
   // global because concept clusters cross sources by nature.
   extract_atoms: 'source',
   synthesize_concepts: 'global',
+  // v0.43 (gbrain-shake entity pack) — both per-source content-derivation.
+  // discover_entities scans one source's recent pages; ner_link walks one
+  // source's pages and writes mentions edges. The gazetteer extractNerLinks
+  // builds is brain-wide for READS only (findMentionedEntities enforces a
+  // per-source guard on the WRITE), matching the extract_atoms 'source'
+  // taxonomy — no runtime fanout enforcement here regardless.
+  discover_entities: 'source',
+  ner_link: 'source',
   // v0.41.11.0 — declared 'source' for taxonomy alignment with
   // extract_facts (per-source semantics). PHASE_SCOPE has no runtime
   // fanout enforcement today (per the comment above); the phase
@@ -294,6 +333,12 @@ const NEEDS_LOCK_PHASES: ReadonlySet<CyclePhase> = new Set([
   // mutate DB state and need the lock.
   'extract_atoms',
   'synthesize_concepts',
+  // v0.43 (gbrain-shake entity pack) — discover_entities INSERTs into
+  // entity_proposals; ner_link INSERTs mentions edges into links. Both mutate
+  // DB state, so a `--phase discover_entities` / `--phase ner_link` run must
+  // acquire the cycle lock.
+  'discover_entities',
+  'ner_link',
   // v0.41.11.0 — inserts facts + writes terminal audit rows; needs lock.
   'conversation_facts_backfill',
   // v0.41.39 (#1700) — writes pages via put_page (per-page advisory-locked
@@ -1828,6 +1873,92 @@ export async function runCycle(
         progress.finish();
       }
       await safeYield(opts.yieldBetweenPhases);
+    }
+
+    // ── v0.43 (gbrain-shake entity pack): discover_entities → ner_link ──
+    // Two DB-sourced, pack-gated phases. Same orchestrator-level pack gate as
+    // extract_atoms/synthesize_concepts (consults the active pack's `phases:`
+    // via packDeclaresPhase); only gbrain-shake declares them today. Guard on
+    // `!engine` ONLY — NEVER brainDir. They read pages from the engine (not an
+    // on-disk checkout), so they must run on checkout-less Postgres/remote
+    // brains where the FS-gated `extract` phase skips (the exact silent
+    // empty-graph failure this feature fixes). Both are BaseCyclePhase
+    // subclasses invoked via ctx (like the calibration trio below), so we build
+    // a trusted-local OperationContext (remote:false — operator CLI / autopilot
+    // daemon) scoped to the cycle's source.
+    if (phases.includes('discover_entities') || phases.includes('ner_link')) {
+      if (!engine) {
+        for (const p of (['discover_entities', 'ner_link'] as const)) {
+          if (phases.includes(p)) {
+            phaseResults.push({
+              phase: p,
+              status: 'skipped',
+              duration_ms: 0,
+              summary: 'no database connected',
+              details: { reason: 'no_database' },
+            });
+          }
+        }
+      } else {
+        const entityCfgMod = await import('./config.ts');
+        const entityConfig = entityCfgMod.loadConfig() ?? ({} as ReturnType<typeof entityCfgMod.loadConfig> & object);
+        const entityCtx = {
+          engine,
+          config: entityConfig,
+          logger: { info() {}, warn() {}, error() {} } as never,
+          dryRun,
+          remote: false as const,
+          sourceId: cycleSourceId ?? 'default',
+        } as never;
+
+        if (phases.includes('discover_entities')) {
+          checkAborted(opts.signal);
+          if (!(await packDeclaresPhase(engine, 'discover_entities'))) {
+            // Greppable pack-gated marker (matches extract_atoms/synthesize_concepts).
+            phaseResults.push({
+              phase: 'discover_entities',
+              status: 'skipped',
+              duration_ms: 0,
+              summary: 'discover_entities: active pack does not declare this phase (only gbrain-shake declares it)',
+              details: { reason: 'not_in_active_pack', pack_gated: true },
+            });
+          } else {
+            progress.start('cycle.discover_entities');
+            const { runPhaseDiscoverEntities } = await import('./cycle/discover-entities.ts');
+            // Progress: cycle.ts owns the outer start/finish (matching the
+            // calibration trio); the phase's own reporter hooks are left unset
+            // so they no-op rather than nesting a second start/finish.
+            const { result, duration_ms } = await timePhase(() =>
+              runPhaseDiscoverEntities(entityCtx, { dryRun }) as Promise<PhaseResult>);
+            result.duration_ms = duration_ms;
+            phaseResults.push(result);
+            progress.finish();
+          }
+          await safeYield(opts.yieldBetweenPhases);
+        }
+
+        if (phases.includes('ner_link')) {
+          checkAborted(opts.signal);
+          if (!(await packDeclaresPhase(engine, 'ner_link'))) {
+            phaseResults.push({
+              phase: 'ner_link',
+              status: 'skipped',
+              duration_ms: 0,
+              summary: 'ner_link: active pack does not declare this phase (only gbrain-shake declares it)',
+              details: { reason: 'not_in_active_pack', pack_gated: true },
+            });
+          } else {
+            progress.start('cycle.ner_link');
+            const { runPhaseNerLink } = await import('./cycle/ner-link.ts');
+            const { result, duration_ms } = await timePhase(() =>
+              runPhaseNerLink(entityCtx, { dryRun }) as Promise<PhaseResult>);
+            result.duration_ms = duration_ms;
+            phaseResults.push(result);
+            progress.finish();
+          }
+          await safeYield(opts.yieldBetweenPhases);
+        }
+      }
     }
 
     // ── v0.33.3 W0c: resolve_symbol_edges (between extract_facts + patterns) ──

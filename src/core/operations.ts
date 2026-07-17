@@ -1830,6 +1830,67 @@ const takes_calibration: Operation = {
   cliHints: { name: 'takes-calibration' },
 };
 
+/**
+ * v0.43 (gbrain-shake entity pack, R8) — the review + promote MCP surface for
+ * the `discover_entities` proposal queue. Mirrors the `gbrain entities propose`
+ * CLI (src/commands/entities.ts) EXACTLY by reusing its exported pure functions
+ * (listProposals / acceptProposal / rejectProposal) — no duplicated lifecycle
+ * logic. accept promotes via the same put_page path the CLI's default
+ * PageCreator uses (write-through parity), reject stamps the row; the same
+ * guards (status guard, slug-collision never-clobber, create-before-stamp) hold
+ * because it's the same code.
+ */
+const entity_proposals_list: Operation = {
+  name: 'entity_proposals_list',
+  description: 'List entity-discovery proposals (person/project) from the gbrain-shake discover_entities review queue. Defaults to pending. Filter by status/source.',
+  scope: 'read',
+  params: {
+    status: { type: 'string', description: 'pending (default) | accepted | rejected', enum: ['pending', 'accepted', 'rejected'] },
+    source_id: { type: 'string', description: 'Scope to one source (omit for brain-wide)' },
+    limit: { type: 'number', description: 'Max rows (default: engine default)' },
+  },
+  handler: async (ctx, p) => {
+    const { listProposals } = await import('../commands/entities.ts');
+    const status = p.status as 'pending' | 'accepted' | 'rejected' | undefined;
+    // Source scope: explicit param wins; else the ctx-resolved source (federated
+    // array precedence handled by the CLI fn taking a scalar — mirror ctx.sourceId).
+    const sourceId = (p.source_id as string | undefined) ?? ctx.sourceId;
+    return listProposals(ctx.engine, {
+      ...(status ? { status } : {}),
+      ...(sourceId ? { sourceId } : {}),
+      ...(typeof p.limit === 'number' ? { limit: p.limit as number } : {}),
+    });
+  },
+  cliHints: { name: 'entity-proposals-list', hidden: true },
+};
+
+const entity_proposals_act: Operation = {
+  name: 'entity_proposals_act',
+  description: 'Act on an entity proposal: accept (promote to a real person/project page via put_page, then stamp accepted) or reject (stamp rejected; never re-proposed). Accept never overwrites an existing page — a slug collision is surfaced, not clobbered. Parity with `gbrain entities propose --accept/--reject`.',
+  scope: 'write',
+  mutating: true,
+  params: {
+    id: { type: 'number', required: true, description: 'Proposal id' },
+    action: { type: 'string', required: true, description: 'accept | reject', enum: ['accept', 'reject'] },
+    acted_by: { type: 'string', description: 'Actor recorded in acted_by (default: mcp)' },
+  },
+  handler: async (ctx, p) => {
+    const { acceptProposal, rejectProposal } = await import('../commands/entities.ts');
+    const id = p.id as number;
+    const action = p.action as string;
+    const actedBy = (p.acted_by as string | undefined) ?? 'mcp';
+    if (action !== 'accept' && action !== 'reject') {
+      throw new OperationError('invalid_params', `action must be 'accept' or 'reject', got '${action}'`);
+    }
+    if (ctx.dryRun) return { dry_run: true, action, id };
+    if (action === 'accept') {
+      return acceptProposal(ctx.engine, id, { actedBy });
+    }
+    return rejectProposal(ctx.engine, id, { actedBy });
+  },
+  cliHints: { name: 'entity-proposals-act', hidden: true },
+};
+
 const think: Operation = {
   name: 'think',
   description: 'Multi-hop synthesis across pages + takes + graph. Pulls relevant evidence and produces a cited answer with conflict + gap analysis.',
@@ -5369,6 +5430,9 @@ export const operations: Operation[] = [
   get_calibration_profile,
   // v0.28: Takes + think
   takes_list, takes_search, think,
+  // v0.43 (gbrain-shake entity pack, R8): entity-proposal review MCP surface
+  // (mirrors `gbrain entities propose` — reuses entities.ts exported fns)
+  entity_proposals_list, entity_proposals_act,
   // v0.30: calibration aggregates over takes
   takes_scorecard, takes_calibration,
   // v0.28: whoami + scoped sources management

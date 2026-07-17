@@ -394,7 +394,11 @@ describe('runCycle — yieldBetweenPhases hook', () => {
     // v0.41.11.0: 20 phases (added `conversation_facts_backfill` between consolidate and propose_takes).
     // v0.41.39 (#1700) + v0.42.0.0: 22 phases (added `enrich_thin` AND `skillopt`
     // between conversation_facts_backfill and embed — both landed in this merge).
-    expect(hookCalls).toBe(22);
+    // v0.43 (gbrain-shake entity pack): 24 phases (added `discover_entities` +
+    // `ner_link` after extract_atoms). Both are pack-gated: on the default
+    // (non-shake) pack they SKIP, but the skip path still fires safeYield, so
+    // the between-phase hook count rises by 2.
+    expect(hookCalls).toBe(24);
   });
 
   test('hook exceptions do not abort the cycle', async () => {
@@ -409,7 +413,8 @@ describe('runCycle — yieldBetweenPhases hook', () => {
     // v0.39.0.0: 17 phases (T12 schema-suggest phase between orphans and purge).
     // v0.41.11.0: 20 phases (+extract_atoms, +synthesize_concepts, +conversation_facts_backfill).
     // v0.41.39 (#1700) + v0.42.0.0: 22 phases (+enrich_thin, +skillopt).
-    expect(report.phases.length).toBe(22);
+    // v0.43 (gbrain-shake entity pack): 24 phases (+discover_entities, +ner_link).
+    expect(report.phases.length).toBe(24);
   });
 });
 
