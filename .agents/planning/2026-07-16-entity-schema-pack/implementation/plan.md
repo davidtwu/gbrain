@@ -138,7 +138,15 @@ Step 5: `ner_link` cycle phase — FIRST GRAPH EDGES (R6)
 
 Objective: `src/core/cycle/ner-link.ts` — BaseCyclePhase wrapping `extractNerLinks`,
 DB-sourced, pack-gated, `!engine` guard ONLY (never brainDir). Writes mentions edges from
-source pages → linkable entity pages. Register in ALL_PHASES after where discover_entities
+source pages → linkable entity pages.
+
+**NOTE (Step 9 finding):** the gazetteer currently matches on page `title` ONLY, not
+frontmatter `aliases` (by-mention.ts). So an accepted entity page "Mike Stuck" links on the
+title but NOT on alias "mikstuck". The Q2 decision (require last-name/alias for person links)
++ this step's value depend on alias-aware matching. DECIDE in this step: either (a) extend the
+gazetteer to also index frontmatter aliases (broadens recall, aligns with Q2 alias-match
+rule), or (b) accept title-only for v1 and defer alias indexing. Recommend (a) — it's small
+and the Q2 first-name-rejection rule implicitly assumed alias matching works. Register in ALL_PHASES after where discover_entities
 will go (Step 8 slots in before it); update pinning tests minimally for this one phase.
 
 Guidance: this is the payoff step — after Steps 1-4, entity pages exist + are linkable, so

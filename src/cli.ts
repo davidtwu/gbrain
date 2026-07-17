@@ -44,7 +44,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch']);
+const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'backfill-entity-types', 'entities', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'advisor', 'watch']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -70,6 +70,9 @@ const CLI_ONLY_SELF_HELP = new Set([
   'self-upgrade',
   // v0.43 (#2095): watch ships WATCH_HELP (flags + the stdin-turn protocol).
   'watch',
+  // v0.43 (Step 9): `gbrain entities propose --help` prints its own usage
+  // (actions + the accept/reject/collision semantics). Route around the stub.
+  'entities',
   // v0.37 fix wave (Lane D.4 + CDX2-12): sync's --no-embed flag was
   // unreachable via help because the dispatcher's generic CLI-only
   // short-circuit fired before runSync could print its own usage block.
@@ -1803,6 +1806,16 @@ async function handleCliOnly(command: string, args: string[]) {
         await runEdgesBackfill(engine, args);
         break;
       }
+      case 'backfill-entity-types': {
+        // R2 (entity-schema-pack Step 3) — reversible re-type of existing
+        // entity pages so gbrain-shake's declared type NAMES match stored data.
+        // Snapshot-before-write, idempotent/resumable, wrong-brain guarded.
+        // The snapshot table is lazy-created here (disposable scratch), NOT in
+        // the static schema or a migration.
+        const { runBackfillEntityTypes } = await import('./commands/backfill-entity-types.ts');
+        await runBackfillEntityTypes(engine, args);
+        break;
+      }
       case 'whoknows': {
         // v0.33 (Issue #?): expertise + relationship-proximity routing.
         // MCP op `find_experts` (read-scoped) backs the same code path; CLI
@@ -1866,6 +1879,12 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'takes': {
         const { runTakes } = await import('./commands/takes.ts');
         await runTakes(engine, args);
+        break;
+      }
+      case 'entities': {
+        // v0.43 (Step 9) — entity-proposal review + promote CLI (gbrain-shake R8).
+        const { runEntities } = await import('./commands/entities.ts');
+        await runEntities(engine, args);
         break;
       }
       case 'onboard': {
