@@ -17,7 +17,7 @@
  */
 
 import { CANONICAL_PRICING, type ModelPricing } from './model-pricing.ts';
-import { splitProviderModelId } from './model-id.ts';
+import { splitProviderModelId, bedrockToCanonicalKey } from './model-id.ts';
 
 export type { ModelPricing };
 
@@ -48,6 +48,12 @@ export const ANTHROPIC_PRICING: Record<string, ModelPricing> = Object.fromEntrie
  * and OpenRouter recipe lists) hits the pricing table. Pre-v0.41.21.0 the inline
  * `:`-only split missed slash form → BudgetTracker no_pricing hard-fail with
  * `--max-cost N` (closes #1540).
+ *
+ * Also accepts Bedrock inference-profile ids (`bedrock:us.anthropic.claude-opus-4-8`)
+ * — these route through `canonicalLookup`, which strips the `bedrock:` transport
+ * + `us.`/`global.` region-profile prefix and prices at the native vendor rate.
+ * Pre-fix the Bedrock cycle handed this id to the budget meter, missed pricing,
+ * and the per-source cap failed open with `BUDGET_METER_NO_PRICING`.
  */
 export function estimateMaxCostUsd(
   modelId: string,
@@ -58,6 +64,19 @@ export function estimateMaxCostUsd(
   if (!p) {
     const { model: tail } = splitProviderModelId(modelId);
     if (tail) p = ANTHROPIC_PRICING[tail];
+  }
+  // Bedrock inference-profile ids (`bedrock:us.anthropic.claude-opus-4-8`) →
+  // strip transport + region-profile to the native `vendor:model` key, then
+  // price via the bare Anthropic view. Routing through ANTHROPIC_PRICING (not
+  // canonicalLookup directly) preserves this fn's Anthropic-only null contract:
+  // a non-Anthropic Bedrock id (`bedrock:us.meta.llama-...`) yields a non-
+  // anthropic key whose bare tail misses the anthropic view → null → the
+  // budget meter's unpriced-bypass, same as any other non-Anthropic model.
+  if (!p) {
+    const bedrockKey = bedrockToCanonicalKey(modelId);
+    if (bedrockKey?.startsWith('anthropic:')) {
+      p = ANTHROPIC_PRICING[bedrockKey.slice('anthropic:'.length)];
+    }
   }
   if (!p) return null;
   return (

@@ -79,6 +79,27 @@ describe('canonicalLookup — id normalization', () => {
     });
   });
 
+  test('Bedrock inference-profile id → hit (strip bedrock: + us./global. profile prefix)', () => {
+    // The Bedrock recipe (src/core/ai/recipes/bedrock.ts) hands consumers the
+    // INFERENCE-PROFILE id. `bedrock:` is transport and `us.`/`global.` is the
+    // region-profile prefix — both billing-irrelevant. The vendor+model
+    // underneath (anthropic.claude-opus-4-8) is the canonical pricing identity.
+    expect(canonicalLookup('bedrock:us.anthropic.claude-opus-4-8')).toEqual({ input: 5.0, output: 25.0 });
+    expect(canonicalLookup('bedrock:global.anthropic.claude-opus-4-8')).toEqual({ input: 5.0, output: 25.0 });
+    expect(canonicalLookup('bedrock:us.anthropic.claude-sonnet-4-6')).toEqual({ input: 3.0, output: 15.0 });
+    expect(canonicalLookup('bedrock:us.anthropic.claude-haiku-4-5')).toEqual({ input: 1.0, output: 5.0 });
+  });
+
+  test('Bedrock slash-transport form also normalizes', () => {
+    expect(canonicalLookup('bedrock/us.anthropic.claude-opus-4-8')).toEqual({ input: 5.0, output: 25.0 });
+  });
+
+  test('Bedrock Cohere embed profile → MISS (embeddings not in the chat table)', () => {
+    // Correctly stays unpriced by the chat table — embeddings price separately
+    // in embedding-pricing.ts.
+    expect(canonicalLookup('bedrock:us.cohere.embed-v4:0')).toBeUndefined();
+  });
+
   test('null / empty → undefined (no throw)', () => {
     expect(canonicalLookup(null)).toBeUndefined();
     expect(canonicalLookup(undefined)).toBeUndefined();

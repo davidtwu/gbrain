@@ -49,6 +49,34 @@ describe('estimateMaxCostUsd', () => {
     expect(cost).toBeCloseTo(1.75, 5);
   });
 
+  test('Bedrock inference-profile id bedrock:us.anthropic.claude-opus-4-8 → priced as opus 4.8 ($5/$25)', () => {
+    // The Bedrock recipe hands the budget meter the INFERENCE-PROFILE id
+    // (`bedrock:us.anthropic.claude-opus-4-8`). Pre-fix this missed the
+    // pricing table → estimateMaxCostUsd returned null → BUDGET_METER_NO_PRICING
+    // and the per-source $0.50 cap failed open. The `bedrock:` transport prefix
+    // + the `us.` region-profile prefix are billing-irrelevant; the real vendor
+    // (anthropic) + model (claude-opus-4-8) sit underneath at the canonical rate.
+    // 100K in + 50K out = 0.1*5 + 0.05*25 = 0.5 + 1.25 = 1.75.
+    const cost = estimateMaxCostUsd('bedrock:us.anthropic.claude-opus-4-8', 100_000, 50_000);
+    expect(cost).not.toBeNull();
+    expect(cost).toBeGreaterThan(0);
+    expect(cost).toBeCloseTo(1.75, 5);
+    // Identical to the equivalent canonical/colon id — the normalization is
+    // transparent, not a separately-maintained Bedrock rate.
+    expect(cost).toBeCloseTo(estimateMaxCostUsd('anthropic:claude-opus-4-8', 100_000, 50_000)!, 10);
+  });
+
+  test('global.* Bedrock profile prefix normalizes too', () => {
+    const cost = estimateMaxCostUsd('bedrock:global.anthropic.claude-opus-4-8', 100_000, 50_000);
+    expect(cost).toBeCloseTo(1.75, 5);
+  });
+
+  test('Bedrock Sonnet / Haiku inference-profile ids price at their canonical rate', () => {
+    // Sonnet 4.6 = $3/$15; Haiku 4.5 = $1/$5.
+    expect(estimateMaxCostUsd('bedrock:us.anthropic.claude-sonnet-4-6', 1_000_000, 0)).toBeCloseTo(3.0, 5);
+    expect(estimateMaxCostUsd('bedrock:us.anthropic.claude-haiku-4-5', 1_000_000, 0)).toBeCloseTo(1.0, 5);
+  });
+
   test('unknown model → returns null (caller warn-once + bypass)', () => {
     expect(estimateMaxCostUsd('mistral:medium', 1_000, 1_000)).toBeNull();
     expect(estimateMaxCostUsd('gpt-5', 1_000, 1_000)).toBeNull();

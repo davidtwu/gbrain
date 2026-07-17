@@ -79,6 +79,53 @@ export function splitProviderModelId(input: string | null | undefined): SplitPro
  *   - `:claude-sonnet-4-6` / `/claude-...` → returned as-is (malformed leading separator —
  *                                            empty-string provider; downstream throws loudly)
  */
+/**
+ * Bedrock region inference-profile prefixes. Newer Bedrock models are
+ * inference-profile-only (the raw on-demand id fails with ValidationException),
+ * so ids arrive region-prefixed. These prefixes are billing-irrelevant — the
+ * price is the underlying vendor+model's canonical rate, identical across
+ * regions. `us.`/`global.` are what the Bedrock recipe ships today; `eu.`/`apac.`
+ * are the other published AWS cross-region profiles, folded in so a non-US
+ * install doesn't silently re-open the budget gate.
+ */
+const BEDROCK_PROFILE_PREFIX = /^(?:us|global|eu|apac)\./;
+
+/**
+ * Peel a Bedrock inference-profile id down to its canonical `provider:model`
+ * pricing key, or return null when the input isn't a Bedrock-transport id.
+ *
+ * The Bedrock recipe (`src/core/ai/recipes/bedrock.ts`, via a LiteLLM proxy)
+ * hands consumers ids shaped like `bedrock:us.anthropic.claude-opus-4-8`:
+ *   - `bedrock:` (or `bedrock/`) — transport prefix
+ *   - `us.` / `global.` / `eu.` / `apac.` — region inference-profile prefix
+ *   - `anthropic.claude-opus-4-8` — a DOTTED `vendor.model` tail
+ * None of the Bedrock framing changes the price, so this strips the transport +
+ * region layers and rewrites the dotted `vendor.model` tail into the native
+ * `vendor:model` form the canonical chat-pricing table is keyed by (e.g.
+ * `anthropic:claude-opus-4-8`). Non-Bedrock ids return null so callers fall
+ * through to their normal lookup. Pre-fix these ids missed every pricing table
+ * → `estimateMaxCostUsd` returned null → the dream-cycle budget gate emitted
+ * `BUDGET_METER_NO_PRICING` and the per-source cap failed open on Bedrock runs.
+ *
+ * Note: this maps to the NATIVE vendor rate. A Bedrock/Cohere embed id
+ * (`bedrock:us.cohere.embed-v4:0`) rewrites to `cohere:embed-v4:0`, which is
+ * absent from the chat-pricing table (embeddings price separately) and so
+ * correctly stays a miss.
+ */
+export function bedrockToCanonicalKey(input: string | null | undefined): string | null {
+  const { provider, model } = splitProviderModelId(input);
+  if (provider !== 'bedrock' || !model) return null;
+  const profileStripped = model.replace(BEDROCK_PROFILE_PREFIX, '');
+  // Bedrock model ids are dotted `vendor.model`; the vendor becomes the
+  // canonical provider and the remainder the model. Split on the FIRST dot.
+  const dot = profileStripped.indexOf('.');
+  if (dot === -1) return null;
+  const vendor = profileStripped.slice(0, dot);
+  const modelTail = profileStripped.slice(dot + 1);
+  if (!vendor || !modelTail) return null;
+  return `${vendor}:${modelTail}`;
+}
+
 export function normalizeModelId(input: string, defaultProvider = 'anthropic'): string {
   const { provider, model } = splitProviderModelId(input);
   // Return unchanged (so resolveRecipe throws loudly — #1698) when:

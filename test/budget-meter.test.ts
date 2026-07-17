@@ -50,6 +50,22 @@ describe('BudgetMeter', () => {
     expect(r.allowed).toBe(true);
   });
 
+  test('Bedrock inference-profile Opus 4.8 is PRICED (cap works, does NOT fail open)', () => {
+    // Regression for BUDGET_METER_NO_PRICING on bedrock:us.anthropic.claude-opus-4-8.
+    // The Bedrock cycle hands the meter the inference-profile id; pre-fix it
+    // missed pricing → unpriced bypass → the per-source $0.50 cap failed open.
+    const meter = new BudgetMeter({ budgetUsd: 0.50, phase: 'auto_think', auditPath });
+    const big = { modelId: 'bedrock:us.anthropic.claude-opus-4-8', estimatedInputTokens: 5000, maxOutputTokens: 10000, label: 'big' };
+    const r1 = meter.check(big); // $0.275 — allowed, and PRICED (not unpriced)
+    const r2 = meter.check(big); // $0.55 cumulative > $0.50 → DENY
+    expect(r1.allowed).toBe(true);
+    expect(r1.unpriced).toBeUndefined();
+    expect(r1.estimatedCostUsd).toBeCloseTo(0.275, 5);
+    expect(r2.allowed).toBe(false);
+    expect(r2.reason).toContain('BUDGET_EXHAUSTED');
+    expect(meter.unpricedSubmits).toBe(0);
+  });
+
   test('non-Anthropic model bypasses gate with warn-once + ledger entry', () => {
     const meter = new BudgetMeter({ budgetUsd: 0.001, phase: 'auto_think', auditPath });
     const r1 = meter.check({ modelId: 'gemini-3-pro', estimatedInputTokens: 1000, maxOutputTokens: 1000, label: 'gem1' });

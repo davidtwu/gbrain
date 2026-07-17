@@ -15,7 +15,7 @@
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { splitProviderModelId, normalizeModelId } from '../src/core/model-id.ts';
+import { splitProviderModelId, normalizeModelId, bedrockToCanonicalKey } from '../src/core/model-id.ts';
 
 const REPO_ROOT = join(import.meta.dir, '..');
 const readSrc = (rel: string) => readFileSync(join(REPO_ROOT, rel), 'utf8');
@@ -184,6 +184,38 @@ describe('normalizeModelId (#1698)', () => {
   });
   test('leading separator is not coerced even with a custom default provider', () => {
     expect(normalizeModelId(':gpt-5', 'openai')).toBe(':gpt-5');
+  });
+});
+
+describe('bedrockToCanonicalKey — inference-profile → native vendor:model', () => {
+  test('bedrock:us.anthropic.claude-opus-4-8 → anthropic:claude-opus-4-8', () => {
+    expect(bedrockToCanonicalKey('bedrock:us.anthropic.claude-opus-4-8')).toBe('anthropic:claude-opus-4-8');
+  });
+  test('global. region profile prefix stripped', () => {
+    expect(bedrockToCanonicalKey('bedrock:global.anthropic.claude-opus-4-8')).toBe('anthropic:claude-opus-4-8');
+  });
+  test('eu./apac. region profiles stripped too', () => {
+    expect(bedrockToCanonicalKey('bedrock:eu.anthropic.claude-sonnet-4-6')).toBe('anthropic:claude-sonnet-4-6');
+    expect(bedrockToCanonicalKey('bedrock:apac.anthropic.claude-haiku-4-5')).toBe('anthropic:claude-haiku-4-5');
+  });
+  test('slash transport form (bedrock/...) also handled', () => {
+    expect(bedrockToCanonicalKey('bedrock/us.anthropic.claude-opus-4-8')).toBe('anthropic:claude-opus-4-8');
+  });
+  test('non-anthropic vendor maps to its own provider (cohere embed)', () => {
+    // vendor:model rewrite is vendor-agnostic; the caller decides if it prices.
+    expect(bedrockToCanonicalKey('bedrock:us.cohere.embed-v4:0')).toBe('cohere:embed-v4:0');
+  });
+  test('non-bedrock ids → null (caller falls through to normal lookup)', () => {
+    expect(bedrockToCanonicalKey('anthropic:claude-opus-4-8')).toBeNull();
+    expect(bedrockToCanonicalKey('claude-opus-4-8')).toBeNull();
+    expect(bedrockToCanonicalKey('openrouter:anthropic/claude-sonnet-4-6')).toBeNull();
+    expect(bedrockToCanonicalKey(null)).toBeNull();
+    expect(bedrockToCanonicalKey('')).toBeNull();
+  });
+  test('bedrock id without a dotted vendor.model tail → null', () => {
+    // Defensive: an id that is region-only or has no dot can not name a vendor.
+    expect(bedrockToCanonicalKey('bedrock:us.')).toBeNull();
+    expect(bedrockToCanonicalKey('bedrock:someflatmodel')).toBeNull();
   });
 });
 

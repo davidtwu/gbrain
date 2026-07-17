@@ -34,7 +34,7 @@
  * per-MTok, char-based).
  */
 
-import { splitProviderModelId } from './model-id.ts';
+import { splitProviderModelId, bedrockToCanonicalKey } from './model-id.ts';
 
 export interface ModelPricing {
   /** USD per 1M input tokens. */
@@ -97,6 +97,12 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
  * `anthropic/claude-...`, and `openrouter:anthropic/claude-...` is not a
  * canonical key. OpenRouter markup ≠ native pricing, so we never reprice it as
  * the inner vendor.
+ *
+ * Bedrock inference-profile ids (`bedrock:us.anthropic.claude-opus-4-8`) DO
+ * resolve: unlike OpenRouter, Bedrock is a pass-through transport (the AWS
+ * account pays the native vendor rate, region-independent), so the transport +
+ * region-profile prefixes are stripped and the dotted `vendor.model` tail is
+ * rewritten to the canonical `vendor:model` key. See `bedrockToCanonicalKey`.
  */
 export function canonicalLookup(
   modelId: string | null | undefined,
@@ -106,7 +112,14 @@ export function canonicalLookup(
   //    tails carried verbatim as keys (e.g. together:.../Llama-3.3-70B-...).
   const direct = CANONICAL_PRICING[modelId];
   if (direct) return direct;
-  // 2. Normalize bare/slash via the shared splitter (colon-first precedence).
+  // 2. Bedrock inference-profile id → native vendor:model canonical key
+  //    (strip bedrock: transport + us./global. region-profile prefix).
+  const bedrockKey = bedrockToCanonicalKey(modelId);
+  if (bedrockKey) {
+    const p = CANONICAL_PRICING[bedrockKey];
+    if (p) return p;
+  }
+  // 3. Normalize bare/slash via the shared splitter (colon-first precedence).
   const { provider, model } = splitProviderModelId(modelId);
   if (!model) return undefined;
   const key = provider ? `${provider}:${model}` : `anthropic:${model}`;
