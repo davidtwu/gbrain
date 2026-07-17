@@ -840,6 +840,38 @@ CREATE TABLE IF NOT EXISTS think_ab_results (
 CREATE INDEX IF NOT EXISTS think_ab_results_recent_idx
   ON think_ab_results (source_id, ran_at DESC);
 
+-- entity_proposals: discover_entities review queue (gbrain-shake pack, R7/R8).
+-- Mirrors take_proposals idempotency discipline; entity-shaped columns +
+-- org_hint (org signals ride as an attribute, never a type=organization page).
+-- Mirrors migration v123 + src/schema.sql.
+CREATE TABLE IF NOT EXISTS entity_proposals (
+  id                BIGSERIAL PRIMARY KEY,
+  source_id         TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  source_page_slug  TEXT NOT NULL,
+  proposed_slug     TEXT NOT NULL,
+  proposed_type     TEXT NOT NULL CHECK (proposed_type IN ('person','project')),
+  proposed_title    TEXT NOT NULL,
+  proposed_aliases  JSONB NOT NULL DEFAULT '[]',
+  org_hint          TEXT,
+  content_hash      TEXT NOT NULL,
+  prompt_version    TEXT NOT NULL,
+  proposal_run_id   TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending','accepted','rejected')),
+  confidence        REAL,
+  model_id          TEXT NOT NULL,
+  proposed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  acted_at          TIMESTAMPTZ,
+  acted_by          TEXT,
+  promoted_slug     TEXT,
+  UNIQUE (source_id, source_page_slug, content_hash, prompt_version)
+);
+CREATE INDEX IF NOT EXISTS entity_proposals_pending_idx
+  ON entity_proposals (source_id)
+  WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS entity_proposals_run_idx
+  ON entity_proposals (proposal_run_id);
+
 -- ============================================================
 -- access_tokens: legacy bearer tokens for remote MCP access
 -- ============================================================

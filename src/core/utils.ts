@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
-import type { Page, PageInput, PageType, Chunk, SearchResult, StalePageRow } from './types.ts';
+import type { Page, PageInput, PageType, Chunk, SearchResult, StalePageRow, EntityProposalRow, EntityProposalType, EntityProposalStatus } from './types.ts';
 import type { Take, TakeKind } from './engine.ts';
 
 /**
@@ -172,6 +172,44 @@ export function rowToStalePage(row: Record<string, unknown>): StalePageRow {
       ? String(row.updated_at_iso)
       : new Date(row.updated_at as string).toISOString(),
   };
+}
+
+/**
+ * gbrain-shake entity schema pack (v123) — map an `entity_proposals` row to
+ * EntityProposalRow. Shared by both engines so JSONB (`proposed_aliases`) and
+ * date parsing can't drift. `proposed_aliases` comes back as a parsed array on
+ * both engines when the column round-trips a genuine jsonb array; tolerate a
+ * string (older driver codecs) by JSON.parse, and a null/non-array by [].
+ */
+export function rowToEntityProposal(row: Record<string, unknown>): EntityProposalRow {
+  const rawAliases = row.proposed_aliases;
+  let aliases: string[] = [];
+  const parsed = typeof rawAliases === 'string' ? safeJsonParse(rawAliases) : rawAliases;
+  if (Array.isArray(parsed)) aliases = parsed.map((a) => String(a));
+  return {
+    id: Number(row.id),
+    source_id: row.source_id as string,
+    source_page_slug: row.source_page_slug as string,
+    proposed_slug: row.proposed_slug as string,
+    proposed_type: row.proposed_type as EntityProposalType,
+    proposed_title: row.proposed_title as string,
+    proposed_aliases: aliases,
+    org_hint: (row.org_hint as string | null) ?? null,
+    content_hash: row.content_hash as string,
+    prompt_version: row.prompt_version as string,
+    proposal_run_id: row.proposal_run_id as string,
+    status: row.status as EntityProposalStatus,
+    confidence: row.confidence == null ? null : Number(row.confidence),
+    model_id: row.model_id as string,
+    proposed_at: new Date(row.proposed_at as string),
+    acted_at: row.acted_at == null ? null : new Date(row.acted_at as string),
+    acted_by: (row.acted_by as string | null) ?? null,
+    promoted_slug: (row.promoted_slug as string | null) ?? null,
+  };
+}
+
+function safeJsonParse(s: string): unknown {
+  try { return JSON.parse(s); } catch { return null; }
 }
 
 /**

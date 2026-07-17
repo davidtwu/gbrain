@@ -41,11 +41,12 @@ import type {
   EvalCandidate, EvalCandidateInput,
   EvalCaptureFailure, EvalCaptureFailureReason,
   SalienceOpts, SalienceResult, AnomaliesOpts, AnomalyResult,
+  EntityProposalInput, EntityProposalRow, EntityProposalListOpts, EntityProposalAction,
   EmotionalWeightInputRow, EmotionalWeightWriteRow,
   DomainBankSampleOpts, CorpusSampleOpts, DomainBankRow,
   EnrichCandidatesOpts, EnrichCandidate,
 } from './types.ts';
-import { validateSlug, contentHash, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, takeRowToTake, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
+import { validateSlug, contentHash, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, takeRowToTake, isUndefinedTableError, warnOncePerProcess, rowToEntityProposal } from './utils.ts';
 import { deriveResolutionTuple, finalizeScorecard } from './takes-resolution.ts';
 import { normalizeWeightForStorage } from './takes-fence.ts';
 import { executeRawJsonb } from './sql-query.ts';
@@ -5879,6 +5880,81 @@ export class PGLiteEngine implements BrainEngine {
     ];
 
     return computeAnomaliesFromBuckets(baseline, today, sigma);
+  }
+
+  // ── entity_proposals (gbrain-shake pack, R7/R8; migration v123) ──
+  // Parity with postgres-engine.ts. Same SQL: PGLite's db.query accepts the
+  // `$N::text::jsonb` positional cast (op-checkpoint.ts precedent) so
+  // proposed_aliases round-trips as a genuine jsonb array on both engines.
+
+  async insertEntityProposal(row: EntityProposalInput): Promise<{ id: number } | null> {
+    const rows = await this.executeRaw<{ id: number }>(
+      `INSERT INTO entity_proposals
+         (source_id, source_page_slug, proposed_slug, proposed_type, proposed_title,
+          proposed_aliases, org_hint, content_hash, prompt_version, proposal_run_id,
+          confidence, model_id)
+       VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (source_id, source_page_slug, content_hash, prompt_version) DO NOTHING
+       RETURNING id`,
+      [
+        row.source_id,
+        row.source_page_slug,
+        row.proposed_slug,
+        row.proposed_type,
+        row.proposed_title,
+        JSON.stringify(row.proposed_aliases ?? []),
+        row.org_hint ?? null,
+        row.content_hash,
+        row.prompt_version,
+        row.proposal_run_id,
+        row.confidence ?? null,
+        row.model_id,
+      ],
+    );
+    return rows.length > 0 ? { id: Number(rows[0].id) } : null;
+  }
+
+  async listEntityProposals(opts?: EntityProposalListOpts): Promise<EntityProposalRow[]> {
+    const limit = Math.max(1, Math.min(opts?.limit ?? 50, 1000));
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (opts?.status) {
+      params.push(opts.status);
+      where.push(`status = $${params.length}`);
+    }
+    if (opts?.sourceId) {
+      params.push(opts.sourceId);
+      where.push(`source_id = $${params.length}`);
+    }
+    params.push(limit);
+    const limitParam = `$${params.length}`;
+    const rows = await this.executeRaw<Record<string, unknown>>(
+      `SELECT id, source_id, source_page_slug, proposed_slug, proposed_type, proposed_title,
+              proposed_aliases, org_hint, content_hash, prompt_version, proposal_run_id,
+              status, confidence, model_id, proposed_at, acted_at, acted_by, promoted_slug
+         FROM entity_proposals
+         ${where.length > 0 ? 'WHERE ' + where.join(' AND ') : ''}
+        ORDER BY proposed_at DESC, id DESC
+        LIMIT ${limitParam}`,
+      params,
+    );
+    return rows.map(rowToEntityProposal);
+  }
+
+  async actEntityProposal(id: number, action: EntityProposalAction): Promise<EntityProposalRow | null> {
+    const rows = await this.executeRaw<Record<string, unknown>>(
+      `UPDATE entity_proposals
+          SET status = $2,
+              acted_by = $3,
+              acted_at = now(),
+              promoted_slug = $4
+        WHERE id = $1 AND status = 'pending'
+       RETURNING id, source_id, source_page_slug, proposed_slug, proposed_type, proposed_title,
+                 proposed_aliases, org_hint, content_hash, prompt_version, proposal_run_id,
+                 status, confidence, model_id, proposed_at, acted_at, acted_by, promoted_slug`,
+      [id, action.status, action.acted_by, action.promoted_slug ?? null],
+    );
+    return rows.length > 0 ? rowToEntityProposal(rows[0]) : null;
   }
 }
 

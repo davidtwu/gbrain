@@ -20,6 +20,7 @@ import type {
   DomainBankSampleOpts, CorpusSampleOpts, DomainBankRow,
   AdjacencyRow,
   EnrichCandidatesOpts, EnrichCandidate,
+  EntityProposalInput, EntityProposalRow, EntityProposalListOpts, EntityProposalAction,
 } from './types.ts';
 
 /**
@@ -2197,4 +2198,29 @@ export interface BrainEngine {
    * not a misleading mean of 1.
    */
   findAnomalies(opts: AnomaliesOpts): Promise<AnomalyResult[]>;
+
+  // ── entity_proposals (gbrain-shake pack, R7/R8; migration v123) ──
+  /**
+   * Insert one entity proposal into the `entity_proposals` queue. Idempotent:
+   * the composite UNIQUE (source_id, source_page_slug, content_hash,
+   * prompt_version) means re-running discovery over an unchanged page writes
+   * nothing (ON CONFLICT DO NOTHING). Returns the inserted row's id, or null
+   * when the conflict skipped the write. proposed_aliases is written as JSONB
+   * (via the ::text::jsonb positional-cast rule — never JSON.stringify into
+   * ::jsonb). Must move in lockstep with the PGLite implementation
+   * (test/e2e/engine-parity.test.ts).
+   */
+  insertEntityProposal(row: EntityProposalInput): Promise<{ id: number } | null>;
+  /**
+   * List entity proposals, newest-first, optionally filtered by status and/or
+   * source. `limit` defaults to 50 (clamped 1..1000).
+   */
+  listEntityProposals(opts?: EntityProposalListOpts): Promise<EntityProposalRow[]>;
+  /**
+   * Act on a pending proposal: stamp status (accepted|rejected), acted_by,
+   * acted_at=now(), and promoted_slug (accept path). Only transitions a row
+   * still in `pending` (guards double-accept). Returns the updated row, or
+   * null when no pending row with that id existed (already acted or absent).
+   */
+  actEntityProposal(id: number, action: EntityProposalAction): Promise<EntityProposalRow | null>;
 }

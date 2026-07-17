@@ -5505,6 +5505,61 @@ export const MIGRATIONS: Migration[] = [
         WHERE dimension IS NOT NULL;
     `,
   },
+  {
+    version: 123,
+    name: 'entity_proposals_v0_43',
+    // gbrain-shake entity schema pack — the discover_entities review queue
+    // (R7/R8). Mirrors take_proposals (v69) discipline: the composite UNIQUE
+    // (source_id, source_page_slug, content_hash, prompt_version) is the
+    // idempotency cache so re-running discovery over unchanged pages writes
+    // nothing (ON CONFLICT DO NOTHING). Differences from take_proposals are
+    // deliberate: promoted_slug TEXT (the accepted PAGE, not a fence row) and
+    // the entity-shaped columns (proposed_type/title/aliases + org_hint —
+    // org signals ride as an attribute, never a type=organization page, Q1).
+    // proposed_aliases is JSONB (repo convention; obey the ::text::jsonb write
+    // rule — no type=organization page). proposal_run_id supports bulk audit /
+    // rollback of a bad discovery run. Created empty, so plain CREATE INDEX is
+    // instant — no CONCURRENTLY needed. RLS: covered by the v35
+    // auto_enable_rls event trigger on Postgres (same as v110/v115/v117 tables).
+    // Keep in sync with src/schema.sql, src/core/pglite-schema.ts,
+    // src/core/schema-embedded.ts (four-place table declaration, §6.6).
+    idempotent: true,
+    sql: `
+      CREATE TABLE IF NOT EXISTS entity_proposals (
+        id                BIGSERIAL PRIMARY KEY,
+        source_id         TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        source_page_slug  TEXT NOT NULL,
+        proposed_slug     TEXT NOT NULL,
+        proposed_type     TEXT NOT NULL CHECK (proposed_type IN ('person','project')),
+        proposed_title    TEXT NOT NULL,
+        proposed_aliases  JSONB NOT NULL DEFAULT '[]',
+        org_hint          TEXT,
+        content_hash      TEXT NOT NULL,
+        prompt_version    TEXT NOT NULL,
+        proposal_run_id   TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','accepted','rejected')),
+        confidence        REAL,
+        model_id          TEXT NOT NULL,
+        proposed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        acted_at          TIMESTAMPTZ,
+        acted_by          TEXT,
+        promoted_slug     TEXT,
+        UNIQUE (source_id, source_page_slug, content_hash, prompt_version)
+      );
+      CREATE INDEX IF NOT EXISTS entity_proposals_pending_idx
+        ON entity_proposals (source_id)
+        WHERE status = 'pending';
+      CREATE INDEX IF NOT EXISTS entity_proposals_run_idx
+        ON entity_proposals (proposal_run_id);
+    `,
+    verify: async (engine) => {
+      const rows = await engine.executeRaw<{ present: boolean }>(
+        `SELECT to_regclass('public.entity_proposals') IS NOT NULL AS present`,
+      );
+      return rows.length > 0 && Boolean(rows[0].present);
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

@@ -533,6 +533,80 @@ export interface AnomalyResult {
 }
 
 /**
+ * gbrain-shake entity schema pack — proposed entity type (person|project only).
+ * Org signals attach as an `org_hint` attribute, never a type=organization page.
+ */
+export type EntityProposalType = 'person' | 'project';
+
+/** gbrain-shake entity schema pack — proposal lifecycle status. */
+export type EntityProposalStatus = 'pending' | 'accepted' | 'rejected';
+
+/**
+ * Row inserted into `entity_proposals` by the `discover_entities` phase (R7).
+ * Idempotency key is (source_id, source_page_slug, content_hash, prompt_version)
+ * — a re-run over unchanged pages writes nothing (ON CONFLICT DO NOTHING).
+ */
+export interface EntityProposalInput {
+  source_id: string;
+  /** The source page the entity was discovered in. */
+  source_page_slug: string;
+  /** Candidate canonical slug the entity would get on accept. */
+  proposed_slug: string;
+  proposed_type: EntityProposalType;
+  proposed_title: string;
+  /** Alias list; defaults to [] when omitted. */
+  proposed_aliases?: string[];
+  /** Org signal attached as an attribute (never a type=organization page). */
+  org_hint?: string | null;
+  /** SHA-256 of the source body slice (idempotency). */
+  content_hash: string;
+  /** Extractor prompt version — bump to invalidate the idempotency cache. */
+  prompt_version: string;
+  /** Groups proposals from a single discovery run (bulk audit / rollback). */
+  proposal_run_id: string;
+  confidence?: number | null;
+  model_id: string;
+}
+
+/** A row read back from `entity_proposals`. */
+export interface EntityProposalRow {
+  id: number;
+  source_id: string;
+  source_page_slug: string;
+  proposed_slug: string;
+  proposed_type: EntityProposalType;
+  proposed_title: string;
+  proposed_aliases: string[];
+  org_hint: string | null;
+  content_hash: string;
+  prompt_version: string;
+  proposal_run_id: string;
+  status: EntityProposalStatus;
+  confidence: number | null;
+  model_id: string;
+  proposed_at: Date;
+  acted_at: Date | null;
+  acted_by: string | null;
+  promoted_slug: string | null;
+}
+
+/** Filters for `listEntityProposals`. */
+export interface EntityProposalListOpts {
+  status?: EntityProposalStatus;
+  /** Single-source scope. Omit for brain-wide. */
+  sourceId?: string;
+  limit?: number;
+}
+
+/** Fields stamped by `actEntityProposal` when a proposal is accepted/rejected. */
+export interface EntityProposalAction {
+  status: 'accepted' | 'rejected';
+  acted_by: string;
+  /** Slug of the page created on accept (accept path only). */
+  promoted_slug?: string | null;
+}
+
+/**
  * v0.29 — Per-page tag + take inputs to the emotional-weight formula.
  * Returned in batch by `engine.batchLoadEmotionalInputs` so the cycle phase
  * computes weights for many pages with two SQL round-trips total.
