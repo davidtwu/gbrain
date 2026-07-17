@@ -9,17 +9,24 @@ Branch: `feat/entity-schema-pack` (gbrain-src). Live engine: Postgres (:5433, co
 
 ## Progress checklist
 
-- [ ] Step 1 — Pack manifest `gbrain-shake` (full corpus-matched type set, NOT active yet)
-- [ ] Step 2 — `linkable` manifest field + pack-aware gazetteer helper (base parity preserved)
-- [ ] Step 3 — Reversible backfill command (`--dry-run/--apply/--revert` + snapshot table)
-- [ ] Step 4 — Pre-activation type-coverage guard + activate pack + collector typing fix
-- [ ] Step 5 — `ner_link` cycle phase (DB-sourced, pack-gated) → **first graph edges**
-- [ ] Step 6 — NER precision knobs (allow/ignore list, first-name rejection)
-- [ ] Step 7 — `entity_proposals` table (4-place migration, both engines)
-- [ ] Step 8 — `discover_entities` cycle phase (LLM, budgeted, pack-gated) → proposals
-- [ ] Step 9 — Review + promote CLI (`gbrain entities propose --list/--accept/--reject`)
-- [ ] Step 10 — Review MCP tools + wire both new phases into cycle ALL_PHASES + pinning tests
-- [ ] Step 11 — End-to-end growth-loop validation on the live brain
+- [x] Step 1 — Pack manifest `gbrain-shake` (full corpus-matched type set) — commit 0c7e8d4
+- [x] Step 2 — `linkable` manifest field + pack-aware gazetteer helper (parity via const fallback) — b46be57
+- [x] Step 3 — Reversible backfill command (+slack-channel→slack fix) — 6a1c70c
+- [x] Step 4 — Pre-activation coverage guard PASSED (0 uncovered) + backfill applied (112 rows, snapshot for revert) + pack ACTIVATED (config.json schema_pack=gbrain-shake; backup at config.json.pre-shake-bak). NO flattening (note stayed 277).
+- [x] Step 5 — `ner_link` cycle phase + emitPlainMentions fix — 02463a8
+- [x] Step 6 — NER precision knobs — 02463a8
+- [x] Step 7 — `entity_proposals` table (v123, 4-place) — b0c0449
+- [x] Step 8 — `discover_entities` cycle phase — 3adb343
+- [x] Step 9 — Review/promote CLI — 314570b
+- [x] Step 10 — MCP tools + cycle ALL_PHASES wiring + 5 pinning tests — 95df1a5
+- [x] Step 11 — VALIDATED: link_count 97→2,928 (2,831 new mentions edges): 2,021→person,
+      810→project. Top-linked persons = Michael Succi (682), Suhail Mirza (147), David Knopov
+      (125) — real collaborators. 1,220 pages now connected. No LLM discovery run yet (needs
+      proxy; deferred to next daily cycle / on-demand).
+
+## STATUS: COMPLETE. gbrain-shake active on the live brain; graph populated.
+Reversibility intact: `gbrain backfill-entity-types --revert` + restore config.json.pre-shake-bak
++ deactivate pack. Snapshot table backfill_entity_types_20260716 holds 112 rows.
 
 ---
 
