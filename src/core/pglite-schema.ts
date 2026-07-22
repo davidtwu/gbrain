@@ -843,7 +843,7 @@ CREATE INDEX IF NOT EXISTS think_ab_results_recent_idx
 -- entity_proposals: discover_entities review queue (gbrain-shake pack, R7/R8).
 -- Mirrors take_proposals idempotency discipline; entity-shaped columns +
 -- org_hint (org signals ride as an attribute, never a type=organization page).
--- Mirrors migration v123 + src/schema.sql.
+-- Mirrors migration v125 + src/schema.sql.
 CREATE TABLE IF NOT EXISTS entity_proposals (
   id                BIGSERIAL PRIMARY KEY,
   source_id         TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -1054,6 +1054,12 @@ ALTER TABLE pages ADD COLUMN IF NOT EXISTS search_vector tsvector;
 
 CREATE INDEX IF NOT EXISTS idx_pages_search ON pages USING GIN(search_vector);
 
+-- #2704: compiled_truth (unbounded whole-page body) deliberately NOT
+-- indexed — overflows Postgres's 1MB tsvector cap on large pages.
+-- content_chunks.search_vector (chunk-grain, populated separately) is
+-- what searchKeyword() actually queries. See migrate.ts's v124 migration
+-- for the full rationale; keep in sync with that + reindex-search-vector.ts
+-- + schema-embedded.ts.
 CREATE OR REPLACE FUNCTION update_page_search_vector() RETURNS trigger SET search_path = pg_catalog, public AS $$
 DECLARE
   timeline_text TEXT;
@@ -1065,7 +1071,6 @@ BEGIN
 
   NEW.search_vector :=
     setweight(to_tsvector('english', coalesce(NEW.title, '')), 'A') ||
-    setweight(to_tsvector('english', coalesce(NEW.compiled_truth, '')), 'B') ||
     setweight(to_tsvector('english', coalesce(NEW.timeline, '')), 'C') ||
     setweight(to_tsvector('english', coalesce(timeline_text, '')), 'C');
 

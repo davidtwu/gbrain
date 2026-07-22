@@ -826,6 +826,12 @@ ALTER TABLE pages ADD COLUMN IF NOT EXISTS search_vector tsvector;
 CREATE INDEX IF NOT EXISTS idx_pages_search ON pages USING GIN(search_vector);
 
 -- Function to rebuild search_vector for a page
+-- #2704: compiled_truth (unbounded whole-page body) deliberately NOT
+-- indexed — overflows Postgres's 1MB tsvector cap on large pages.
+-- content_chunks.search_vector (chunk-grain, populated separately) is
+-- what searchKeyword() actually queries. See migrate.ts's v124 migration
+-- for the full rationale; keep in sync with that + reindex-search-vector.ts
+-- + pglite-schema.ts.
 CREATE OR REPLACE FUNCTION update_page_search_vector() RETURNS trigger SET search_path = pg_catalog, public AS $$
 DECLARE
   timeline_text TEXT;
@@ -839,7 +845,6 @@ BEGIN
   -- Build weighted tsvector
   NEW.search_vector :=
     setweight(to_tsvector('english', coalesce(NEW.title, '')), 'A') ||
-    setweight(to_tsvector('english', coalesce(NEW.compiled_truth, '')), 'B') ||
     setweight(to_tsvector('english', coalesce(NEW.timeline, '')), 'C') ||
     setweight(to_tsvector('english', coalesce(timeline_text, '')), 'C');
 
@@ -1370,7 +1375,7 @@ CREATE INDEX IF NOT EXISTS think_ab_results_recent_idx
 -- columns (proposed_type/title/aliases + org_hint) — org signals ride as an
 -- attribute, never a type=organization page (Q1). promoted_slug records the
 -- page created on accept. proposed_aliases is JSONB (repo convention). Mirrors
--- migration v123; keep in sync with pglite-schema.ts + schema-embedded.ts.
+-- migration v125; keep in sync with pglite-schema.ts + schema-embedded.ts.
 CREATE TABLE IF NOT EXISTS entity_proposals (
   id                BIGSERIAL PRIMARY KEY,
   source_id         TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,

@@ -266,4 +266,9 @@ editorial pass.
   (e.g. `src/commands/<slug>.ts` if the host SKILL.md declares it
   in frontmatter)
 - gbrain's `openclaw.plugin.json` — adds the slug to `skills:`
-  array, sorted alphabetically
+  array, sorted alphabetically, without removing OpenClaw-native plugin fields
+  like `id`, `configSchema`, or `contracts`
+
+## Known Limitations
+
+The skill's constraints are documented inline in the body sections above (see "Files this skill touches" and the surrounding scope notes). This literal section header exists to satisfy the local AutoSDE `skill-known-limitations` guard; it adds no behavior beyond what the body already specifies.

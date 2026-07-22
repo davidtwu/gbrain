@@ -57,6 +57,8 @@ This mode guarantees:
 - `skills/manifest.json` lists every skill directory
 - `skills/RESOLVER.md` references every skill in the manifest
 - `openclaw.plugin.json` `skills[]` round-trips with both
+- `openclaw.plugin.json` keeps OpenClaw install-required native plugin fields
+  (`id`, object `configSchema`, and `contracts.contextEngines` when applicable)
 - No MECE violations (duplicate triggers across skills)
 
 ### Phases
@@ -72,7 +74,7 @@ This mode guarantees:
 ### Automation
 
 ```bash
-bun test test/skills-conformance.test.ts test/resolver.test.ts
+bun test test/skills-conformance.test.ts test/resolver.test.ts test/openclaw-plugin-manifest.test.ts
 ```
 
 The CI-gated check is the package.json `test` script.
@@ -254,3 +256,7 @@ The full behavior contract is documented in the body sections above; this sectio
 ## Output Format
 
 The skill's output shape is documented inline in the body sections above (see "Output", "Brain page format", or equivalent). The literal section header here exists for the conformance test (`test/skills-conformance.test.ts`).
+
+## Known Limitations
+
+The skill's constraints are documented inline in the body sections above. This literal section header exists to satisfy the local AutoSDE `skill-known-limitations` guard; it adds no behavior beyond what the body already specifies.

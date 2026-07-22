@@ -1,10 +1,10 @@
 /**
- * entity_proposals table + engine methods (gbrain-shake pack, R7/R8; migration v123).
+ * entity_proposals table + engine methods (gbrain-shake pack, R7/R8; migration v125).
  *
  * Step 7 of the entity-schema-pack plan. Covers:
  *   - Fresh PGLite install → entity_proposals exists with the right
  *     columns/constraints (four-place declaration, §6.6/§7.4).
- *   - Migration v122→v123 path adds the table; idempotent + verify passes twice.
+ *   - Migration v124→v125 path adds the table; idempotent + verify passes twice.
  *   - Engine methods round-trip: insert (ON CONFLICT → one row), list by status,
  *     act (pending→accepted stamps promoted_slug + acted_at; double-act guarded).
  *   - proposed_aliases JSONB round-trips as a genuine array (no double-encode).
@@ -38,20 +38,20 @@ beforeEach(async () => {
   await resetPgliteState(engine);
 });
 
-describe('entity_proposals — migration v123 registration', () => {
-  test('v123 exists with the expected name + idempotent flag', () => {
-    const v123 = MIGRATIONS.find((m) => m.version === 123);
-    expect(v123).toBeDefined();
-    expect(v123!.name).toBe('entity_proposals_v0_43');
-    expect(v123!.idempotent).toBe(true);
+describe('entity_proposals — migration v125 registration', () => {
+  test('v125 exists with the expected name + idempotent flag', () => {
+    const v125 = MIGRATIONS.find((m) => m.version === 125);
+    expect(v125).toBeDefined();
+    expect(v125!.name).toBe('entity_proposals_v0_43');
+    expect(v125!.idempotent).toBe(true);
   });
 
-  test('v123 is the latest version', () => {
-    expect(LATEST_VERSION).toBeGreaterThanOrEqual(123);
+  test('v125 is the latest version', () => {
+    expect(LATEST_VERSION).toBeGreaterThanOrEqual(125);
   });
 
-  test('v123 SQL declares the table + both indexes + idempotency UNIQUE', () => {
-    const sql = MIGRATIONS.find((m) => m.version === 123)!.sql;
+  test('v125 SQL declares the table + both indexes + idempotency UNIQUE', () => {
+    const sql = MIGRATIONS.find((m) => m.version === 125)!.sql;
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS entity_proposals');
     expect(sql).toContain("CHECK (proposed_type IN ('person','project'))");
     expect(sql).toContain("CHECK (status IN ('pending','accepted','rejected'))");
@@ -131,11 +131,11 @@ describe('entity_proposals — fresh install (four-place declaration)', () => {
   });
 });
 
-describe('entity_proposals — migration v122→v123 path', () => {
-  test('applying v123 onto a v122 DB adds the table; idempotent + verify twice', async () => {
-    // Simulate a brain stamped at v122 that lacks the table.
+describe('entity_proposals — migration v124→v125 path', () => {
+  test('applying v125 onto a v124 DB adds the table; idempotent + verify twice', async () => {
+    // Simulate a brain stamped at v124 that lacks the table.
     await engine.executeRaw('DROP TABLE IF EXISTS entity_proposals CASCADE');
-    await engine.setConfig('version', '122');
+    await engine.setConfig('version', '124');
 
     const before = await engine.executeRaw<{ present: boolean }>(
       `SELECT to_regclass('public.entity_proposals') IS NOT NULL AS present`,
@@ -154,10 +154,10 @@ describe('entity_proposals — migration v122→v123 path', () => {
     const r2 = await runMigrations(engine);
     expect(r2.applied).toBe(0);
 
-    // v123 verify hook returns true against the live table.
-    const v123 = MIGRATIONS.find((m) => m.version === 123)!;
-    expect(await v123.verify!(engine)).toBe(true);
-    expect(await v123.verify!(engine)).toBe(true);
+    // v125 verify hook returns true against the live table.
+    const v125 = MIGRATIONS.find((m) => m.version === 125)!;
+    expect(await v125.verify!(engine)).toBe(true);
+    expect(await v125.verify!(engine)).toBe(true);
   }, 60_000);
 });
 
