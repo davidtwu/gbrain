@@ -1,0 +1,69 @@
+name: Sync fork with upstream
+
+# Keeps this fork's default branch (master) current with the upstream
+# repo (garrytan/gbrain). Runs on a daily schedule and can be triggered
+# manually from the Actions tab (Run workflow).
+#
+# Strategy: fast-forward master to upstream/master when possible; if this
+# fork's master has diverged (e.g. because this workflow file lives here and
+# not upstream), fall back to a merge commit. Never force-pushes, so local
+# fork history is preserved.
+
+on:
+  schedule:
+    # 07:15 UTC daily. Cron on GitHub is best-effort and can lag under load;
+    # a missed slot is recovered on the next day's run.
+    - cron: '15 7 * * *'
+  workflow_dispatch: {}
+
+# Only one sync at a time; a new run cancels an in-flight one.
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (master, full history)
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          # Use the default GITHUB_TOKEN; contents:write above lets it push.
+          persist-credentials: true
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/garrytan/gbrain.git
+
+      - name: Fetch upstream
+        run: git fetch upstream --prune
+
+      - name: Sync master from upstream
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          UPSTREAM=upstream/master
+          BEHIND=$(git rev-list --count HEAD..$UPSTREAM)
+          AHEAD=$(git rev-list --count $UPSTREAM..HEAD)
+          echo "master is $BEHIND behind and $AHEAD ahead of $UPSTREAM"
+
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "Already up to date — nothing to do."
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor HEAD $UPSTREAM; then
+            echo "Fast-forwarding master to $UPSTREAM"
+            git merge --ff-only $UPSTREAM
+          else
+            echo "Diverged — merging $UPSTREAM into master"
+            git merge --no-edit -m "chore: sync master with upstream/master" $UPSTREAM
+          fi
+
+          git push origin master
