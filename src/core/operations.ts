@@ -45,6 +45,7 @@ import {
   LIST_SKILLS_DESCRIPTION,
   GET_SKILL_DESCRIPTION,
 } from './operations-descriptions.ts';
+import { localOps } from './local-ops/session-transcripts-op.ts';
 
 // --- Types ---
 
@@ -5474,6 +5475,7 @@ export const operations: Operation[] = [
   // deny-all for remote callers). NOT localOnly so admin OAuth clients
   // can submit; CLI bypass via ctx.remote === false.
   run_skillopt,
+  ...localOps, // FORK-LOCAL (davidtwu) — see src/core/local-ops/; do not upstream
 ];
 
 export const operationsByName = Object.fromEntries(
